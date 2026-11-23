@@ -2,7 +2,7 @@ import { createMechanism, createDemo, cloneMechanism, normalizeMechanism, nextId
   sketchDriven, splitElement, removeObject, distance, isPiston, balanceForce, currentForces, analyzePath, poseValidity, Simulation } from './mechanics.js';
 import { createCanvas, pistonGeometry } from './canvas.js';
 import { setupStudio } from './ui.js';
-import { collections, kindName, label, lookup, renderTree, inspectorContent, updateAnalysisCursor, updateForceBalance } from './panels.js';
+import { collections, kindName, label, lookup, renderTree, inspectorContent, updateAnalysisCursor, updateSimulationReadouts, strokeStopLabel } from './panels.js';
 import { PlaybackClock, translateSelection, pathCsv } from './workspace-tools.js';
 
 const $ = selector => document.querySelector(selector);
@@ -22,7 +22,7 @@ const hatchStudy={minAngle:-22,maxAngle:0};
 let analysis = freshAnalysis(hatchStudy), previewModel = null, forceReport = null;
 const forceOverrides = new Map();
 const forcePolicy = {model:false, simulation:true, analysis:true};
-let pick = null, tool = 'select', page = null, relation = null, operand = null, cachedPath, menu;
+let pick = null, tool = 'select', page = null, relation = null, operand = null, cachedPath, menu, panelContext;
 let saveState = 'Saved in this browser', startupHint = '';
 const undo = [], redo = [];
 const visibility = {grid:true,snap:true,dimensions:true,constraints:true,labels:true,pointLoads:true,
@@ -231,12 +231,13 @@ function inspectForces() {
   if(forceReport) return forceReport;
   const model = current();
   const piston = balancePiston(model);
-  forceReport = currentForces(model,{dynamic:Boolean(sim && (measured || physicsMode==='forced')),physicsMode:sim?.physicsMode,
+  const prescribed=sim?.physicsMode==='forced' && sim.pistons.length>0;
+  forceReport = currentForces(model,{dynamic:Boolean(sim && measured && !prescribed),physicsMode:sim?.physicsMode,
     validity:sim?.validity,pistonId:piston?.id});
   const balance=forceReport.handleBalance;
-  if(visibility.assist && balance?.handleId!=null && Number.isFinite(balance.extra)) {
+  if(visibility.assist && balance?.handleId!=null && !balance.stopLocked && Number.isFinite(balance.extra)) {
     forceReport.arrows.push({kind:'assist',joint:balance.handleId,handleName:label(findJoint(model,balance.handleId)),
-      element:piston?.id,fx:0,fy:balance.extra});
+      element:piston?.id,fx:0,fy:balance.extra,atStop:balance.stopSupported});
   }
   return forceReport;
 }
@@ -257,14 +258,20 @@ function renderDrawing() {
 function panelInputs() {
   const path = mode==='analysis' ? travel() : null;
   return {model:current(),design,pick,page,selections,simulation:!!sim,path,forces:inspectForces(),balancePistonId:balancePiston(current())?.id,
-    analysis:{...analysis,forceDisplay},physicsMode,time:sim?.time,playing,trace:sim?.tracing};
+    analysis:{...analysis,forceDisplay},physicsMode,time:sim?.time,playing,trace:sim?.tracing,
+    motionStatus:sim && simulationStatus()};
 }
 function renderPanel() {
-  if(!page){ui.setPanel(null);return;}
+  if(!page){panelContext=null;ui.setPanel(null);return;}
+  const panel=$('#inspector');
+  const context=JSON.stringify([mode,page,pick?.type,pick?.id]);
+  const disclosures=panelContext===context ? [...panel.querySelectorAll('details')].map(detail=>detail.open) : [];
   const data=inspectorContent(panelInputs());
-  ui.setPanel(data.title);$('#inspector').replaceChildren(...data.blocks);
+  ui.setPanel(data.title);panel.replaceChildren(...data.blocks);
+  panelContext=context;
+  panel.querySelectorAll('details').forEach((detail,i)=>{if(i<disclosures.length) detail.open=disclosures[i];});
   if(sim && !sim.validity.valid) {
-    for(const b of $('#inspector').querySelectorAll('[data-action="play"],[data-action="step"]')) b.disabled=true;
+    for(const b of panel.querySelectorAll('[data-action="play"],[data-action="step"]')) b.disabled=true;
   }
 }
 function updatePistonAlert() {
@@ -281,6 +288,30 @@ function updatePistonAlert() {
   if(button.textContent!==message)button.textContent=message;
   button.hidden=!message;
 }
+function simulationStatus() {
+  if(!sim.validity.valid) return 'Invalid starting pose';
+  const stopped=sim.pistons.filter(({element})=>element.driveState==='stroke-stop');
+  if(stopped.length && stopped.length===sim.pistons.length) {
+    const stop=sim.validity.pistons[stopped[0].element.id]?.atStop;
+    const sharedStop=stopped.every(({element})=>sim.validity.pistons[element.id]?.atStop===stop);
+    return (sharedStop ? strokeStopLabel(stop) : null) ?? 'Stroke stop';
+  }
+  if(!playing && sim.pistons.some(({element})=>element.driveState==='blocked')) return 'Motion blocked';
+  return playing ? 'Running' : 'Paused';
+}
+function simulationHint() {
+  if(!sim.motionMessage) return defaultHint();
+  if(physicsMode==='forced' && sim.validity.valid && sim.pistons.length) {
+    if(simulationStatus()==='Motion blocked') return sim.motionMessage+' Check the mounting and drive directions, or try reversing travel.';
+    if(sim.pistons.every(({element})=>sim.validity.pistons[element.id]?.atStop==='both')) {
+      return sim.motionMessage+' Check the installed piston travel in Model.';
+    }
+    if(!playing && sim.pistons.every(({element})=>element.driveState==='stroke-stop')) {
+      return sim.motionMessage+' Choose Reverse travel, then Run.';
+    }
+  }
+  return sim.motionMessage;
+}
 function updateStatus() {
   updatePistonAlert();
   if(mode==='analysis') {
@@ -289,7 +320,7 @@ function updateStatus() {
       pose ? pose.angleDeg.toFixed(1)+'° · Reachable pose' :
       path.poses.filter(p=>p.feasible).length+' reachable / '+path.poses.length+' samples';
   } else if(sim) {
-    $('#model-status').textContent=(physicsMode==='forced'?'Forced motion':'Real physics')+' · '+(playing?'Running':'Paused')+' · '+sim.time.toFixed(2)+' s · '+speed+'×';
+    $('#model-status').textContent=(physicsMode==='forced'?'Forced motion':'Real physics')+' · '+simulationStatus()+' · '+sim.time.toFixed(2)+' s · '+speed+'×';
   } else {
     $('#model-status').textContent=design.elements.length+' components · '+design.joints.filter(j=>j.kind!=='origin').length+' joints';
   }
@@ -320,32 +351,37 @@ function switchMode(next) {
   stop(); closeContext();
   if(sim && next==='analysis') suspendedSim={sim,measured};
   if(next==='model') suspendedSim=null;
-  sim=next==='simulation'?suspendedSim?.sim ?? new Simulation(design):null;
-  if(sim) sim.physicsMode=physicsMode;
+  sim=next==='simulation'?suspendedSim?.sim ?? new Simulation(design,{physicsMode}):null;
   measured=sim ? suspendedSim?.measured ?? false : false;
   if(next==='simulation') suspendedSim=null;
   mode=next; clearPreview();
   setSelection(selections);
   if(mode==='analysis' && pick?.type==='element' && isPiston(lookup(design,pick))) analysis.pistonId=pick.id;
   tool='select'; relation=null; operand=null; page=mode==='analysis'?'results':null;
-  render(); hint(defaultHint());
+  render(); hint(sim ? simulationHint() : defaultHint());
 }
 function tick(now) {
   if(!playing||!sim) return;
   const previous=sim.time;
   const result=clock.advance(now,speed,sim);
-  if(result?.accepted===false){stop();forceReport=null;render();hint(sim.motionMessage || defaultHint());return;}
-  if(sim.time!==previous){measured=true;forceReport=null;renderDrawing();}
+  const advanced=sim.time!==previous;
+  if(advanced || result?.settled) measured=true;
+  if(result?.accepted===false || result?.settled){
+    stop();forceReport=null;ui.setPlaying(false);updateStatus();renderDrawing();
+    const panel=$('#inspector');
+    if(page && panel.contains(document.activeElement) && document.activeElement.matches('input[data-field]')) {
+      updateSimulationReadouts(panel,panelInputs());
+    } else renderPanel();
+    hint(simulationHint());
+    return;
+  }
+  if(advanced){forceReport=null;renderDrawing();}
   if(now-lastPanel>150){
     updateStatus();
     if(page){
       const panel=$('#inspector');
-      if(panel.contains(document.activeElement)) updateForceBalance(panel,panelInputs());
-      else {
-        const disclosures=[...panel.querySelectorAll('details')].map(detail=>detail.open);
-        renderPanel();
-        panel.querySelectorAll('details').forEach((detail,i)=>{if(i<disclosures.length) detail.open=disclosures[i];});
-      }
+      if(panel.contains(document.activeElement)) updateSimulationReadouts(panel,panelInputs());
+      else renderPanel();
     }
     lastPanel=now;
   }
@@ -538,7 +574,15 @@ function action(act,b) {
     sim.reverseForcedTravel();measured=false;forceReport=null;render();hint(sim.forcedReversed?'Forced travel reversed. The installed piston rating is unchanged.':'Following the configured piston direction.');return;
   }
   if(act==='play'&&sim){if(playing)stop();else{playing=true;frame=requestAnimationFrame(tick);}render();hint(defaultHint());return;}
-  if(act==='step'&&sim){stop();const previous=sim.time;sim.step(1/60);measured=measured || sim.time>previous;forceReport=null;render();hint(sim.motionMessage || 'Advanced one simulation frame (1/60 s).');return;}
+  if(act==='step'&&sim){
+    stop();
+    const previous=sim.time;
+    const result=sim.step(1/60);
+    if(sim.time>previous || result?.settled) measured=true;
+    forceReport=null;render();
+    hint(sim.motionMessage ? simulationHint() : 'Advanced one simulation frame (1/60 s).');
+    return;
+  }
   if(act==='reset'&&sim){stop();sim.reset();measured=false;forceReport=null;render();hint('Restored the design pose.');return;}
   if(act==='trace'&&sim){sim.setTracing(!sim.tracing);render();return;}
   if(act==='clear-traces'&&sim){sim.clearTraces();renderDrawing();return;}

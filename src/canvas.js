@@ -162,13 +162,13 @@ export function pistonShortfallLabel(report) {
   return { text, detail: details.join(' ') };
 }
 
-export function assistArrowLabel({ fx, fy }, handle) {
+export function assistArrowLabel({ fx, fy, atStop }, handle) {
   const magnitude = Math.hypot(fx, fy);
   if (!Number.isFinite(magnitude) || magnitude < 1e-8) return null;
   const vertical = Math.abs(fy) > magnitude * 1e-6 ? (fy > 0 ? 'up' : 'down') : '';
   const horizontal = Math.abs(fx) > magnitude * 1e-6 ? (fx > 0 ? 'right' : 'left') : '';
   const direction = [vertical, horizontal].filter(Boolean).join(' and ');
-  const action = vertical === 'up' && !horizontal ? 'Manual lift' : 'Manual force';
+  const action = atStop ? 'Release from stop' : vertical === 'up' && !horizontal ? 'Manual lift' : 'Manual force';
   return action + ' · ' + shownValue(magnitude, 'N') + ' ' + direction + (handle ? ' at ' + handle : '');
 }
 

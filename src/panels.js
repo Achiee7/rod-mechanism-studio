@@ -25,11 +25,17 @@ const metric = (n,u,digits=1) => fmt(n,digits) + ' ' + u;
 const millimeters = value => metric(value * 1000,'mm');
 const signed = value => Number.isFinite(value) ? (value > 0 ? '+' : '') + metric(value,'N') : 'Unavailable';
 const direction = value => value > 0 ? 'Push / extend' : value < 0 ? 'Pull / retract' : 'Zero';
+export const strokeStopLabel = stop => ({min:'Compressed stop',max:'Extended stop',both:'Locked stroke'})[stop];
 const finitePair = bounds => Array.isArray(bounds) && bounds.length === 2 && bounds.every(Number.isFinite);
 const jointName = (model,id) => model.joints.find(joint => String(joint.id) === String(id))?.name || 'Joint ' + id;
 function row(title, value) {
   const line = h('div',null,'rm-readout');
   line.append(h('span',title),h('strong',value));
+  return line;
+}
+function liveReadout(title, value, name) {
+  const line = row(title,value);
+  line.lastElementChild.dataset.simulationReadout = name;
   return line;
 }
 function section(title,...items) {
@@ -142,8 +148,14 @@ function forceBalanceSection({model,part,report,load}) {
     result.append(
       row('Load at handle before pistons',handEffort(-report.equivalentExternal)),
       row('Piston contribution at handle',handEffort(report.pistonContribution)),
-      effortRow('Extra upward lift needed','Downward restraint needed','Balanced at the handle',report.extra),
     );
+    if (report.stopSupported) {
+      result.append(row('Extra force to hold at the stop',magnitude(0)));
+      if (report.stopLocked) result.append(h('p','The installed stroke limits block motion in both directions.','rm-note'));
+      else result.append(effortRow('Upward lift to leave the stop','Downward force to leave the stop','No force needed to leave the stop',report.extra));
+    } else {
+      result.append(effortRow('Extra upward lift needed','Downward restraint needed','Balanced at the handle',report.extra));
+    }
   } else {
     result.append(h('p',report?.reason || 'Vertical effort at a handle could not be estimated for this pose.','rm-note'));
   }
@@ -173,6 +185,19 @@ export function updateForceBalance(host, inputs) {
   const current = host.querySelector('[data-force-balance]');
   const updated = current && balanceSectionFor(inputs);
   if (updated) current.replaceWith(updated);
+}
+
+export function updateSimulationReadouts(host, inputs) {
+  updateForceBalance(host,inputs);
+  const {model,pick,motionStatus,time,playing} = inputs;
+  const part = pick?.type === 'element' && lookup(model,pick);
+  const readouts = {motion:motionStatus, elapsed:metric(time,'s',2),
+    length:part && isPiston(part) ? millimeters(distance(model,part.a,part.b)) : ''};
+  for (const output of host.querySelectorAll('[data-simulation-readout]')) {
+    output.textContent = readouts[output.dataset.simulationReadout];
+  }
+  const play = host.querySelector('[data-action="play"]');
+  if (play) play.textContent = playing ? 'Pause' : 'Run';
 }
 
 function technicalDetails(title, ...contents) {
@@ -265,7 +290,10 @@ function capacityRows(load) {
   }
   if (Number.isFinite(load.appliedForce)) items.push(row('Applied drive at last step',signed(load.appliedForce)));
   if (!reverse && Number.isFinite(load.utilization)) items.push(row('Available drive utilization',fmt(100 * load.utilization,1) + '%'));
-  if (load.atStop) items.push(row('Stroke position',{min:'Compressed stop',max:'Extended stop',both:'Locked stroke'}[load.atStop]));
+  if (load.atStop) items.push(row('Stroke position',strokeStopLabel(load.atStop)));
+  if (Number.isFinite(load.limitForce) && Math.abs(load.limitForce) >= 0.05) {
+    items.push(row('Stroke-stop reaction (+ push)',signed(load.limitForce)));
+  }
   const status = h('p',capacityStatus(load),'rm-capacity-status');
   status.dataset.capacity = external ? 'overload' : load.status ?? 'unknown';
   items.unshift(status);
@@ -601,7 +629,7 @@ function multiSelection(model, selections, editable) {
   return section(objects.length + ' items selected',list,editable && button('Delete selected items','delete','rm-delete'));
 }
 export function inspectorContent({model,design=model,pick,selections=[],page,simulation,path,forces,pistonLoads=forces?.pistons,
-  balancePistonId,physicsMode,analysis={},time=0,playing=false,trace=false}) {
+  balancePistonId,physicsMode,analysis={},time=0,playing=false,trace=false,motionStatus}) {
   const item=lookup(model,pick), edit=!simulation;
   const title=page==='properties' && selections.length>1 ? 'Selection' :
     item && page==='properties' ? label(item) : page==='motion'?'Motion settings':page==='results'?'Force results':page==='balance'?'Force balance':'Properties';
@@ -651,7 +679,8 @@ export function inspectorContent({model,design=model,pick,selections=[],page,sim
       field('Gravity (m/s²)','gravity',o.gravity,{min:0}),
       field('Damping','damping',o.damping,{min:0,max:1}),
       field('Solver iterations','iterations',o.iterations,{min:1,max:200,step:1})));
-    if(simulation) blocks.push(section('Playback',row('Elapsed',metric(time,'s',2)),button(playing?'Pause':'Run','play'),button('Step one frame','step'),button('Reset pose','reset'),button(trace?'Hide traces':'Trace moving pins','trace'),button('Clear traces','clear-traces')));
+    if(simulation) blocks.push(section('Playback',liveReadout('Motion',motionStatus,'motion'),liveReadout('Elapsed',metric(time,'s',2),'elapsed'),
+      button(playing?'Pause':'Run','play'),button('Step one frame','step'),button('Reset pose','reset'),button(trace?'Hide traces':'Trace moving pins','trace'),button('Clear traces','clear-traces')));
   } else if(selections.length>1) {
     blocks.push(multiSelection(model,selections,edit));
   } else if(item) {
@@ -670,7 +699,7 @@ export function inspectorContent({model,design=model,pick,selections=[],page,sim
         if(['rod','body'].includes(item.kind)) {
           props.push(f('Member type','kind',item.kind,{choices:[['rod','Rod'],['body','Weighted body']]}));
         }
-        if(isPiston(item)) props.push(row('Connection length',metric(length*1000,'mm')),
+        if(isPiston(item)) props.push(simulation ? liveReadout('Connection length',millimeters(length),'length') : row('Connection length',millimeters(length)),
           f('Compressed (mm)','minLength',item.minLength*1000,{min:1}),f('Extended (mm)','maxLength',item.maxLength*1000,{min:1}),
           f('Rated force (N)','force',item.force,{min:0}),f('Direction','forceMode',item.forceMode,{choices:[['push','Push / extend'],['pull','Pull / retract']]}),
           f('Barrel end','barrelEnd',item.barrelEnd ?? 'a',{choices:[['a','Start · '+jointLabel(item.a)],['b','End · '+jointLabel(item.b)]]}),
