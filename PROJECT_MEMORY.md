@@ -20,6 +20,8 @@ Build a browser studio for analyzing feasible 2D linkage paths, the forces they 
 - Real physics allows backdriving; Forced motion supports reverse travel and marks overloaded pistons. Verified below-rated, backdriven and forced movement, mounting errors, and hard stops.
 - Force results now shows total downward load, piston contribution and remaining lift at the named pin. Canvas badges show extra axial push or pull; the recreated example needs 149.6 N push or 149.4 N upward at Pin 2.
 
+- Fixed short-stroke hatch playback in both modes. Real physics uses uniform hinge inertia and pauses at rest. Force results distinguish the 249.6 N axial stop reaction, zero hand force to hold, and 249.3 N upward to release the test hatch.
+
 ## Scope for later
 
 - The earlier Frame Studio project also had 3D and team collaboration. This studio targets standalone 2D mechanism work.
