@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   analyzeLegacyPath, analyzePath, assistForce, balanceForce, createDemo, currentForces, distance, effectiveForce, pathDrivers,
-  normalizeMechanism, pistonLoads, poseValidity, Simulation, solveSketch, splitElement,
+  handleForceBalance, normalizeMechanism, pistonLoads, poseValidity, Simulation, solveSketch, splitElement,
 } from "../src/mechanics.js";
 
 function close(actual, expected, tolerance = 1e-8) {
@@ -253,6 +253,10 @@ test("the four-bar stays on its assembly branch and reports geometric closure li
     }
   }
   assert.equal(balanceForce(model, 4).lineOfAction, false);
+  const budget = handleForceBalance(model, { pistonId: 4 });
+  assert.equal(budget.status, "available");
+  assert.equal(budget.basis, "one-dof");
+  close(budget.extra, path.poses.find(pose => pose.angleDeg === 0).pistons[4].assistForce);
   for (const physicsMode of ["real", "forced"]) {
     const simulation = new Simulation(model, { physicsMode });
     let result;
@@ -528,4 +532,136 @@ test("actuator auto-return cycles its forced commands without editing the physic
   }
   assert.equal(element.force, 10);
   assert.equal(reachedReturn, true);
+});
+
+test("the ramp force budget separates raw weight, vertical effort, and axial command shortfall", () => {
+  const model = normalizeMechanism({
+    joints: [
+      { ...point(1, 0, 0, "rotation"), mass: 400 },
+      { ...point(2, 0.7453, -0.07), name: "Ramp tip" },
+      { ...point(3, 0.748, -0.24928, "fixed"), mass: 900 },
+    ],
+    elements: [
+      { id: 1, a: 1, b: 2, kind: "body", mass: 10 },
+      { id: 2, a: 3, b: 2, kind: "gas_spring", force: 100, forceMode: "pull", minLength: 0.15, maxLength: 0.18 },
+    ],
+    loads: [{ id: 1, joint: 3, fx: 0, fy: -1000 }],
+  });
+  const simulation = new Simulation(model, { physicsMode: "forced" });
+  simulation.reverseForcedTravel();
+  const { handleBalance: budget, pistons } = currentForces(simulation.model, { pistonId: 2, physicsMode: "forced" });
+  assert.equal(budget.status, "available");
+  assert.equal(budget.handleName, "Ramp tip");
+  assert.equal(budget.forceBasis, "configured-in-forced-pose");
+  close(budget.downwardExternalLoad, 98.5905);
+  close(budget.pointDownwardLoad, 0);
+  close(budget.equivalentExternal, 49.5405);
+  close(budget.pistonContribution, -99.847228764);
+  close(budget.extra, 149.387728764);
+  close(pistons[2].demandWithoutPiston, 49.616299434);
+  close(pistons[2].commandDemandWithoutPiston, 49.616299434);
+  assert.equal(pistons[2].commandCapacity, 0);
+  close(pistons[2].commandContribution, -100);
+  close(pistons[2].commandShortfall, 149.616299434);
+  close(pistons[2].signedCommandShortfall, 149.616299434);
+  assert.equal(pistons[2].appliedForce, null);
+});
+
+test("inclined pistons contribute through the same handle lever and can cancel each other", () => {
+  const model = normalizeMechanism({
+    joints: [point(1, 0, 0, "rotation"), point(2, 1, 0.5), point(3, 0, -0.5, "fixed")],
+    elements: [
+      { id: 1, a: 1, b: 2, kind: "body", mass: 12 },
+      { id: 2, a: 3, b: 2, kind: "actuator", minLength: 1.25, maxLength: 1.55, force: 100 },
+      { id: 3, a: 3, b: 2, kind: "gas_spring", minLength: 1.25, maxLength: 1.55, force: 40, forceMode: "pull" },
+    ],
+    loads: [
+      { id: 1, joint: 2, fx: 10, fy: -20 },
+      { id: 2, joint: 2, fx: 0, fy: -30, enabled: false },
+    ],
+  });
+  const budget = handleForceBalance(model, { pistonId: 3, handleId: "2" });
+  assert.equal(budget.status, "available");
+  assert.equal(budget.handleName, "2");
+  close(budget.gravityLoad, 118.2105);
+  close(budget.pointDownwardLoad, 20);
+  close(budget.downwardExternalLoad, 138.2105);
+  close(budget.equivalentExternal, 84.3505);
+  close(budget.pistons[0].contribution, 25 * Math.SQRT2);
+  close(budget.pistons[1].contribution, -10 * Math.SQRT2);
+  close(budget.pistonContribution, 15 * Math.SQRT2);
+  close(budget.extra, 84.3505 - 15 * Math.SQRT2);
+  const otherHandle = handleForceBalance(createDemo(), { pistonId: 3, handleId: 4 });
+  assert.equal(otherHandle.handleName, "Gas rod");
+  close(otherHandle.extra, assistForce(createDemo(), 3).handForce * 1.65 / 1.1);
+});
+
+test("rated playback uses its measured piston output while a posed sketch uses configured capacity", () => {
+  const model = straightPiston({ force: 100 });
+  model.options.gravityEnabled = false;
+  model.elements[0].damping = 50;
+  model.loads.push({ id: 1, joint: 2, fx: 0, fy: -206 });
+  const simulation = new Simulation(model);
+  simulation.model.joints.find(joint => joint.id === 2).vy = 1;
+  simulation.step(1 / 120);
+  const staticReport = currentForces(simulation.model, { pistonId: 1 });
+  assert.equal(staticReport.handleBalance.basis, "vertical-axis");
+  assert.equal(staticReport.handleBalance.forceBasis, "configured-at-pose");
+  close(staticReport.handleBalance.extra, 106);
+  const live = currentForces(simulation.model, { dynamic: true, pistonId: 1 });
+  assert.equal(live.handleBalance.forceBasis, "measured-rated");
+  close(live.handleBalance.equivalentExternal, 206);
+  close(live.handleBalance.pistonContribution, 50);
+  close(live.handleBalance.extra, 156);
+  close(live.pistons[1].commandDemandWithoutPiston, 206);
+  close(live.pistons[1].commandContribution, 50);
+  close(live.pistons[1].commandCapacity, 100);
+  close(live.pistons[1].commandShortfall, 156);
+});
+
+test("vertical effort stays unavailable for inclined free travel, singular handles, and multiple free modes", () => {
+  const free = straightPiston();
+  free.joints.find(joint => joint.id === 2).x = 0.2;
+  assert.equal(handleForceBalance(free, { pistonId: 1 }).status, "unavailable");
+  const legacy = createDemo();
+  legacy.elements[1].kind = "rod";
+  const indeterminate = handleForceBalance(legacy, { pistonId: 3 });
+  assert.equal(indeterminate.status, "unavailable");
+  assert.equal(indeterminate.extra, null);
+  assert.ok(indeterminate.downwardExternalLoad > 0);
+  const singular = normalizeMechanism({
+    joints: [point(1, 0, 0, "rotation"), point(2, 0, 1)],
+    elements: [{ id: 1, a: 1, b: 2, kind: "body", mass: 12 }],
+  });
+  assert.match(handleForceBalance(singular, { handleId: 2 }).reason, /cannot move vertically/);
+});
+
+test("weightless joints carry no downward force while integration retains finite mass", () => {
+  const model = normalizeMechanism({
+    joints: [
+      { ...point(1, 0, 0, "rotation"), mass: 0 },
+      { ...point(2, 1, 0), mass: 0 },
+      { ...point(3, 1, -0.8, "fixed"), mass: 0 },
+    ],
+    elements: [
+      { id: 1, a: 1, b: 2, kind: "rod" },
+      { id: 2, a: 3, b: 2, kind: "actuator", minLength: 0.7, maxLength: 1.1, force: 0 },
+    ],
+  });
+  const report = currentForces(model, { pistonId: 2 });
+  assert.equal(report.handleBalance.status, "available");
+  assert.equal(report.handleBalance.gravityLoad, 0);
+  assert.equal(report.handleBalance.downwardExternalLoad, 0);
+  assert.equal(report.handleBalance.equivalentExternal, 0);
+  assert.equal(report.handleBalance.extra, 0);
+  close(report.pistons[2].demandWithoutPiston, 0);
+  assert.ok(!report.arrows.some(arrow => arrow.kind === "gravity"));
+  const simulation = new Simulation(model);
+  assert.equal(simulation.step(1 / 120).accepted, true);
+  assert.equal(simulation.model.joints.find(joint => joint.id === 2).y, 0);
+  simulation.model.elements.find(element => element.id === 2).force = 1;
+  assert.equal(simulation.step(1 / 120).accepted, true);
+  const tip = simulation.model.joints.find(joint => joint.id === 2);
+  assert.ok(tip.y > 0 && Number.isFinite(tip.vy));
+  assert.ok(!currentForces(simulation.model, { dynamic: true }).arrows.some(arrow => arrow.kind === "gravity"));
 });
