@@ -1,8 +1,8 @@
 import { createMechanism, createDemo, cloneMechanism, normalizeMechanism, nextId, solveSketch,
-  sketchDriven, splitElement, removeObject, distance, isPiston, balanceForce, assistForce, currentForces, analyzePath, poseValidity, Simulation } from './mechanics.js';
+  sketchDriven, splitElement, removeObject, distance, isPiston, balanceForce, currentForces, analyzePath, poseValidity, Simulation } from './mechanics.js';
 import { createCanvas, pistonGeometry } from './canvas.js';
 import { setupStudio } from './ui.js';
-import { collections, kindName, label, lookup, renderTree, inspectorContent, updateAnalysisCursor } from './panels.js';
+import { collections, kindName, label, lookup, renderTree, inspectorContent, updateAnalysisCursor, updateForceBalance } from './panels.js';
 import { PlaybackClock, translateSelection, pathCsv } from './workspace-tools.js';
 
 const $ = selector => document.querySelector(selector);
@@ -114,10 +114,10 @@ const samePick = (a,b) => a?.type === b?.type && a?.id === b?.id;
 function setSelection(items) {
   selections = items.filter(item => lookup(current(), item));
   pick = selections.at(-1) || null;
+  forceReport=null;
 }
 function select(s) {
   setSelection(s ? [s] : []);
-  forceReport=null;
   if(mode==='analysis' && pick?.type==='element') {
     const part=lookup(current(),pick);
     if(isPiston(part)) analysis.pistonId=part.id;
@@ -223,18 +223,20 @@ function forceDisplay(type,id) {
   if(mode!=='model' && forceOverrides.has(type+':'+id)) return forceOverrides.get(type+':'+id);
   return lookup(current(),{type,id})?.showForce !== false;
 }
+function balancePiston(model) {
+  const preferred=mode==='analysis' ? analysis.pistonId : pick?.type==='element' ? pick.id : null;
+  return model.elements.find(part=>part.id===preferred && isPiston(part)) ?? model.elements.find(isPiston);
+}
 function inspectForces() {
   if(forceReport) return forceReport;
   const model = current();
-  forceReport = currentForces(model,{dynamic:Boolean(sim && (measured || physicsMode==='forced')),validity:sim?.validity});
-  const piston = model.elements.find(p=>isPiston(p) && p.id===(analysis.pistonId ?? (pick?.type==='element'?pick.id:null))) ?? model.elements.find(isPiston);
-  if(piston && visibility.assist) {
-    // Prefer the constrained virtual-work solution whenever a sweep sample is displayed.
-    const sample = mode==='analysis' && travel().poses?.[analysis.previewIndex];
-    const atPose = sample?.pistons?.[piston.id];
-    const effort = atPose ? {handForce:atPose.assistForce,handleId:atPose.handleId} : assistForce(model,piston.id);
-    if(effort?.handleId != null && Number.isFinite(effort.handForce))
-      forceReport.arrows.push({kind:'assist',joint:effort.handleId,element:piston.id,fx:0,fy:effort.handForce});
+  const piston = balancePiston(model);
+  forceReport = currentForces(model,{dynamic:Boolean(sim && (measured || physicsMode==='forced')),physicsMode:sim?.physicsMode,
+    validity:sim?.validity,pistonId:piston?.id});
+  const balance=forceReport.handleBalance;
+  if(visibility.assist && balance?.handleId!=null && Number.isFinite(balance.extra)) {
+    forceReport.arrows.push({kind:'assist',joint:balance.handleId,handleName:label(findJoint(model,balance.handleId)),
+      element:piston?.id,fx:0,fy:balance.extra});
   }
   return forceReport;
 }
@@ -254,7 +256,7 @@ function renderDrawing() {
 }
 function panelInputs() {
   const path = mode==='analysis' ? travel() : null;
-  return {model:current(),design,pick,page,selections,simulation:!!sim,path,forces:inspectForces(),
+  return {model:current(),design,pick,page,selections,simulation:!!sim,path,forces:inspectForces(),balancePistonId:balancePiston(current())?.id,
     analysis:{...analysis,forceDisplay},physicsMode,time:sim?.time,playing,trace:sim?.tracing};
 }
 function renderPanel() {
@@ -336,7 +338,15 @@ function tick(now) {
   if(sim.time!==previous){measured=true;forceReport=null;renderDrawing();}
   if(now-lastPanel>150){
     updateStatus();
-    if(!$('#inspector').contains(document.activeElement))renderPanel();
+    if(page){
+      const panel=$('#inspector');
+      if(panel.contains(document.activeElement)) updateForceBalance(panel,panelInputs());
+      else {
+        const disclosures=[...panel.querySelectorAll('details')].map(detail=>detail.open);
+        renderPanel();
+        panel.querySelectorAll('details').forEach((detail,i)=>{if(i<disclosures.length) detail.open=disclosures[i];});
+      }
+    }
     lastPanel=now;
   }
   frame=requestAnimationFrame(tick);
@@ -512,7 +522,15 @@ function action(act,b) {
       switchMode('model');
       if(issue?.element!=null) select({type:'element',id:issue.element});
       hint(issue?.message || 'Repair the installation in Model.');
-    }else{page='motion';render();}
+    }else{
+      const reports=inspectForces().pistons;
+      const focus=balancePiston(sim.model);
+      if(!reports[focus?.id]?.overload) {
+        const affected=sim.model.elements.find(part=>isPiston(part) && reports[part.id]?.overload);
+        if(affected)setSelection([{type:'element',id:affected.id}]);
+      }
+      page='balance';render();
+    }
     return;
   }
   if((act==='play'||act==='step')&&sim&&!sim.validity.valid){hint(defaultHint());return;}
@@ -555,7 +573,10 @@ document.addEventListener('click',event=>{
   if(b.dataset.mode)return switchMode(b.dataset.mode);
   if(b.dataset.tool)return selectTool(b.dataset.tool);
   if(b.dataset.constraint)return startConstraint(b.dataset.constraint);
-  if(b.dataset.panel==='results')return switchMode('analysis');
+  if(b.dataset.panel==='results'){
+    if(sim){page='balance';render();return;}
+    return switchMode('analysis');
+  }
   if(b.dataset.panel && b.dataset.panel!=='tree'){page=b.dataset.panel==='structure'?'properties':b.dataset.panel;render();return;}
   if(b.dataset.action)action(b.dataset.action,b);
 });
