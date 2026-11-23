@@ -33,6 +33,7 @@ const icons = {
   play: '<path d="m7 4 14 8-14 8z"/>',
   pause: '<path d="M8 5v14M16 5v14" stroke-width="3"/>',
   step: '<path d="m5 5 11 7-11 7zM19 5v14"/>',
+  reverse: '<path d="M3 8h17m-4-4 4 4-4 4M21 16H4l4-4m-4 4 4 4"/>',
   reset: '<path d="M3 12a9 9 0 1 1 2.6 6.4M3 5v7h7"/>',
   settings: '<path d="M4 6h16M4 12h16M4 18h16M9 3v6m6 0v6m-6 0v6"/>',
   trace: '<path d="M4 19 9 10l5 4 6-9" stroke-dasharray="2 3"/><circle cx="4" cy="19" r="1.5"/><circle cx="20" cy="5" r="1.5"/>',

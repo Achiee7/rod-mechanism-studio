@@ -1,5 +1,5 @@
 import { createMechanism, createDemo, cloneMechanism, normalizeMechanism, nextId, solveSketch,
-  sketchDriven, splitElement, removeObject, distance, isPiston, balanceForce, assistForce, currentForces, analyzePath, Simulation } from './mechanics.js';
+  sketchDriven, splitElement, removeObject, distance, isPiston, balanceForce, assistForce, currentForces, analyzePath, poseValidity, Simulation } from './mechanics.js';
 import { createCanvas, pistonGeometry } from './canvas.js';
 import { setupStudio } from './ui.js';
 import { collections, kindName, label, lookup, renderTree, inspectorContent, updateAnalysisCursor } from './panels.js';
@@ -10,12 +10,12 @@ const ui = setupStudio();
 const storeKey = 'rod-mechanism-studio.project.v1';
 const demoTitle = 'Hatch + gas spring';
 let design = createDemo(), name = demoTitle, sim = null, playing = false, frame = 0, lastPanel = 0;
-let mode = 'model', suspendedSim = null, speed = 1, selections = [];
+let mode = 'model', suspendedSim = null, speed = 1, physicsMode = 'real', selections = [];
 let measured = false;
 const clock = new PlaybackClock();
 function freshAnalysis(study) {
   const valid=Number.isFinite(study?.minAngle) && Number.isFinite(study?.maxAngle) && study.minAngle>=-360 && study.maxAngle<=360 && study.minAngle<study.maxAngle;
-  return {driverId:study?.driverId ?? null,pistonId:study?.pistonId ?? null,memberId:null,sampleIndex:null,preview:false,metric:'force',
+  return {driverId:study?.driverId ?? null,pistonId:study?.pistonId ?? null,memberId:null,sampleIndex:null,previewIndex:null,metric:'force',
     minAngle:valid?study.minAngle:-80,maxAngle:valid?study.maxAngle:80};
 }
 const hatchStudy={minAngle:-22,maxAngle:0};
@@ -32,18 +32,19 @@ function restoreProject(raw, fallback) {
   if (raw.format && raw.format !== 'rod-mechanism-studio') throw Error('This file is from a different application.');
   if (raw.format && raw.version !== 1) throw Error('This project version is not supported.');
   const model = normalizeMechanism(raw.model ?? raw);
-  return { model, name: String(raw.name || fallback || 'Untitled mechanism').slice(0,100), study:raw.study };
+  return { model, name: String(raw.name || fallback || 'Untitled mechanism').slice(0,100), study:raw.study,
+    physicsMode:raw.physicsMode === 'forced' ? 'forced' : 'real' };
 }
 try {
   const saved = localStorage.getItem(storeKey);
-  if (saved) {const p=restoreProject(JSON.parse(saved),demoTitle); design=p.model; name=p.name;analysis=freshAnalysis(p.study);}
+  if (saved) {const p=restoreProject(JSON.parse(saved),demoTitle); design=p.model; name=p.name;analysis=freshAnalysis(p.study);physicsMode=p.physicsMode;}
 } catch {
   saveState = 'Local project unavailable';
   startupHint = 'The saved project could not be opened. The hatch example is displayed.';
 }
 const studySettings = () => ({driverId:analysis.driverId,pistonId:analysis.pistonId,minAngle:analysis.minAngle,maxAngle:analysis.maxAngle});
-const snapshot = () => ({name, model:cloneMechanism(design),study:studySettings()});
-const envelope = () => ({format:'rod-mechanism-studio',version:1,name,model:design,study:studySettings()});
+const snapshot = () => ({name, model:cloneMechanism(design),study:studySettings(),physicsMode});
+const envelope = () => ({format:'rod-mechanism-studio',version:1,name,model:design,study:studySettings(),physicsMode});
 let checkpoint = snapshot();
 try {
   const savedCheckpoint = localStorage.getItem(storeKey + '.checkpoint');
@@ -65,8 +66,10 @@ const current = () => mode === 'analysis' && previewModel ? previewModel : sim?.
 const findJoint = (model,id) => lookup(model,{type:'joint',id});
 const hint = message => {$('#status-hint').textContent=message;};
 function defaultHint() {
-  if(mode==='analysis') return analysis.preview ? 'Inspecting a sampled pose. The design is unchanged.' : 'Choose a drive link and a sweep range. Select a sample to inspect its pose.';
-  if(sim) return playing ? 'Simulation running. Pause to pose a pin.' : 'Simulation paused. Drag a free pin to inspect another pose.';
+  if(mode==='analysis') return 'Select a sample on the graph. Reachable samples move the drawing.';
+  if(sim && !sim.validity.valid) return sim.validity.issues[0]?.message || 'Repair the starting pose in Model.';
+  if(sim) return physicsMode==='forced' ? 'Forced motion drives the pistons through their available travel. Overloads are marked on the drawing.'
+    : 'Real physics applies the installed forces. An opposing load can hold or backdrive a piston.';
   if(tool==='constraint') return kindName(relation)+' · '+(operand?'Select the second object.':'Select a member or the first point.');
   if(tool==='dimension') return 'Select a member or two points, then click to place the dimension.';
   if(tool==='load') return 'Select a joint or a position on a rod or body to apply a point load.';
@@ -78,16 +81,31 @@ function defaultHint() {
 function remember(before) {
   undo.push(before); if(undo.length>80) undo.shift(); redo.length=0;
 }
-function update(edit, message) {
+function update(edit, message, {opening=false}={}) {
   if(sim) return;
   const before=snapshot(), oldPick=pick, oldSelections=selections.slice();
   try {
-    edit(); remember(before); invalidateDesign(); save(); render(); hint(message || defaultHint());
+    edit();
+    if(!opening) checkEditedMounts(before.model,design);
+    remember(before); invalidateDesign(); save(); render(); hint(message || defaultHint());
   } catch(err) {design=before.model;name=before.name;pick=oldPick;selections=oldSelections;invalidateDesign();render();hint(err.message);}
+}
+function checkEditedMounts(before,after) {
+  for(const part of after.elements.filter(isPiston)) {
+    const problem=pistonGeometry(part,distance(after,part.a,part.b)).problem;
+    if(!problem) continue;
+    const old=before.elements.find(p=>p.id===part.id && isPiston(p));
+    // Imported projects may need several edits before a damaged installation fits.
+    if(old && pistonGeometry(old,distance(before,old.a,old.b)).problem) continue;
+    throw Error(label(part)+' · '+problem+'. Edit the stroke limits or mounting points.');
+  }
+}
+function clearPreview() {
+  previewModel=null;analysis.previewIndex=null;analysis.sampleIndex=null;forceReport=null;
 }
 function invalidateDesign() {
   cachedPath = undefined; forceReport = null; suspendedSim = null;
-  previewModel = null; analysis.preview = false; analysis.sampleIndex = null;
+  clearPreview();
 }
 function travel() {
   return cachedPath ??= analyzePath(design,{driverId:analysis.driverId,minAngle:analysis.minAngle,maxAngle:analysis.maxAngle});
@@ -186,7 +204,8 @@ const drawing=createCanvas($('#drawing'),{
   },
   onPoseJoint(id,p) {
     if(sim&&!playing) {
-      sim.poseJoint(id,p.x,p.y); measured=false; forceReport=null; renderDrawing();renderPanel();
+      const result=sim.poseJoint(id,p.x,p.y); measured=false; forceReport=null; renderDrawing();renderPanel();updateStatus();
+      if(result?.accepted===false)hint(sim.motionMessage || defaultHint());
     }
   },
   onPointer(p) {
@@ -207,12 +226,12 @@ function forceDisplay(type,id) {
 function inspectForces() {
   if(forceReport) return forceReport;
   const model = current();
-  forceReport = currentForces(model,{dynamic:Boolean(sim && measured)});
+  forceReport = currentForces(model,{dynamic:Boolean(sim && (measured || physicsMode==='forced')),validity:sim?.validity});
   const piston = model.elements.find(p=>isPiston(p) && p.id===(analysis.pistonId ?? (pick?.type==='element'?pick.id:null))) ?? model.elements.find(isPiston);
   if(piston && visibility.assist) {
     // Prefer the constrained virtual-work solution whenever a sweep sample is displayed.
-    const sample = mode==='analysis' && travel().poses?.[analysis.sampleIndex];
-    const atPose = analysis.preview && sample?.pistons?.[piston.id];
+    const sample = mode==='analysis' && travel().poses?.[analysis.previewIndex];
+    const atPose = sample?.pistons?.[piston.id];
     const effort = atPose ? {handForce:atPose.assistForce,handleId:atPose.handleId} : assistForce(model,piston.id);
     if(effort?.handleId != null && Number.isFinite(effort.handForce))
       forceReport.arrows.push({kind:'assist',joint:effort.handleId,element:piston.id,fx:0,fy:effort.handForce});
@@ -221,13 +240,14 @@ function inspectForces() {
 }
 function renderDrawing() {
   const m=current();
+  const forces=forcePolicy[mode] || mode!=='model' ? inspectForces() : null;
   drawing.render({model:m,selection:pick,selectionItems:selections,tool,grid:visibility.grid,snap:visibility.snap,gridSize:.025,
     showIds:visibility.labels,showDimensions:visibility.dimensions,showConstraints:visibility.constraints,
     showPointLoads:visibility.pointLoads,showForces:forcePolicy[mode],showAppliedForces:visibility.applied,
     showReactions:visibility.reactions,showMemberForces:visibility.members,showMotorTorques:visibility.motors,
     showPistonForces:visibility.pistons,showConstraintForces:visibility.stops,showAssistForces:visibility.assist,
-    showResultantForces:visibility.resultants,forces:forcePolicy[mode]?inspectForces():[],forceDisplay,
-    readOnly:mode!=='model',poseable:!!sim&&!playing,traces:sim?.tracing?sim.traces:null,
+    showResultantForces:visibility.resultants,forces:forcePolicy[mode]?forces:[],forceDisplay,pistonLoads:forces?.pistons,
+    readOnly:mode!=='model',poseable:!!sim&&sim.validity.valid&&!playing,traces:sim?.tracing?sim.traces:null,
     showExcursion:mode==='analysis' && visibility.excursion,excursionPoses:mode==='analysis'?travel().poses:null,
     momentArm:mode==='analysis'?null:arm(m),
     canMoveJoint:id=>!sketchDriven(design,typeof id==='object'?id.id:id)});
@@ -235,20 +255,39 @@ function renderDrawing() {
 function panelInputs() {
   const path = mode==='analysis' ? travel() : null;
   return {model:current(),design,pick,page,selections,simulation:!!sim,path,forces:inspectForces(),
-    analysis:{...analysis,forceDisplay},time:sim?.time,playing,trace:sim?.tracing};
+    analysis:{...analysis,forceDisplay},physicsMode,time:sim?.time,playing,trace:sim?.tracing};
 }
 function renderPanel() {
   if(!page){ui.setPanel(null);return;}
   const data=inspectorContent(panelInputs());
   ui.setPanel(data.title);$('#inspector').replaceChildren(...data.blocks);
+  if(sim && !sim.validity.valid) {
+    for(const b of $('#inspector').querySelectorAll('[data-action="play"],[data-action="step"]')) b.disabled=true;
+  }
+}
+function updatePistonAlert() {
+  const button=$('#piston-alert');
+  let message='';
+  if(sim) {
+    if(!sim.validity.valid) message='Invalid starting pose · Repair in Model';
+    else {
+      const reports=inspectForces().pistons;
+      const overloaded=sim.model.elements.filter(p=>isPiston(p) && reports?.[p.id]?.overload===true);
+      if(overloaded.length) message=overloaded.length===1 ? label(overloaded[0])+' overloaded · View forces' : overloaded.length+' pistons overloaded · View forces';
+    }
+  }
+  if(button.textContent!==message)button.textContent=message;
+  button.hidden=!message;
 }
 function updateStatus() {
+  updatePistonAlert();
   if(mode==='analysis') {
-    const path=travel(), pose=analysis.preview && path.poses[analysis.sampleIndex];
-    $('#model-status').textContent=pose ? pose.angleDeg.toFixed(1)+'° · '+(pose.feasible?'Reachable pose':'Outside installed travel') :
+    const path=travel(), pose=path.poses[analysis.previewIndex],cursor=path.poses[analysis.sampleIndex];
+    $('#model-status').textContent=cursor && !cursor.feasible ? 'Unreachable sample · drawing at '+(pose ? pose.angleDeg.toFixed(1)+'°':'design pose') :
+      pose ? pose.angleDeg.toFixed(1)+'° · Reachable pose' :
       path.poses.filter(p=>p.feasible).length+' reachable / '+path.poses.length+' samples';
   } else if(sim) {
-    $('#model-status').textContent=(playing?'Running':'Paused')+' · '+sim.time.toFixed(2)+' s · '+speed+'×';
+    $('#model-status').textContent=(physicsMode==='forced'?'Forced motion':'Real physics')+' · '+(playing?'Running':'Paused')+' · '+sim.time.toFixed(2)+' s · '+speed+'×';
   } else {
     $('#model-status').textContent=design.elements.length+' components · '+design.joints.filter(j=>j.kind!=='origin').length+' joints';
   }
@@ -264,6 +303,12 @@ function render() {
   $('[data-action="excursion"]').setAttribute('aria-pressed',String(visibility.excursion));
   $('[data-visibility="loads"]').checked=forcePolicy[mode];
   $('#playback-speed').value=String(speed).replace(/^0\./,'.');
+  for(const radio of document.querySelectorAll('input[name="physics-mode"]')) radio.checked=radio.value===physicsMode;
+  const reverse=$('[data-action="reverse-travel"]');
+  reverse.hidden=!(sim && physicsMode==='forced' && sim.pistons.length);
+  reverse.disabled=!!sim && !sim.validity.valid;
+  reverse.setAttribute('aria-pressed',String(!!sim?.forcedReversed));
+  for(const b of document.querySelectorAll('#command-ribbon [data-action="play"],#command-ribbon [data-action="step"]')) b.disabled=!!sim&&!sim.validity.valid;
   ui.setPlaying(playing);
   updateStatus();renderTree($('#model-tree'),m,pick,selections); renderDrawing(); renderPanel();
 }
@@ -274,9 +319,10 @@ function switchMode(next) {
   if(sim && next==='analysis') suspendedSim={sim,measured};
   if(next==='model') suspendedSim=null;
   sim=next==='simulation'?suspendedSim?.sim ?? new Simulation(design):null;
+  if(sim) sim.physicsMode=physicsMode;
   measured=sim ? suspendedSim?.measured ?? false : false;
   if(next==='simulation') suspendedSim=null;
-  mode=next; forceReport=null;previewModel=null;analysis.preview=false;
+  mode=next; clearPreview();
   setSelection(selections);
   if(mode==='analysis' && pick?.type==='element' && isPiston(lookup(design,pick))) analysis.pistonId=pick.id;
   tool='select'; relation=null; operand=null; page=mode==='analysis'?'results':null;
@@ -285,7 +331,8 @@ function switchMode(next) {
 function tick(now) {
   if(!playing||!sim) return;
   const previous=sim.time;
-  clock.advance(now,speed,sim);
+  const result=clock.advance(now,speed,sim);
+  if(result?.accepted===false){stop();forceReport=null;render();hint(sim.motionMessage || defaultHint());return;}
   if(sim.time!==previous){measured=true;forceReport=null;renderDrawing();}
   if(now-lastPanel>150){
     updateStatus();
@@ -298,8 +345,8 @@ function replaceProject(p) {
   if(mode!=='model') switchMode('model');
   update(()=>{
     design=p.model;name=p.name;setSelection([]);page=null;tool='select';relation=null;operand=null;
-    analysis=freshAnalysis(p.study);forceOverrides.clear();
-  },'Project opened.');
+    analysis=freshAnalysis(p.study);physicsMode=p.physicsMode==='forced'?'forced':'real';forceOverrides.clear();
+  },'Project opened.',{opening:true});
   checkpointDesign();drawing.fit();
 }
 function history(back) {
@@ -307,7 +354,7 @@ function history(back) {
   const source=back?undo:redo, target=back?redo:undo;
   if(!source.length) return;
   target.push(snapshot()); const previous=source.pop();
-  design=previous.model;name=previous.name;analysis=freshAnalysis(previous.study);forceOverrides.clear();setSelection([]);
+  design=previous.model;name=previous.name;physicsMode=previous.physicsMode??'real';analysis=freshAnalysis(previous.study);forceOverrides.clear();setSelection([]);
   page=null;invalidateDesign();save();render();hint(back?'Last edit undone.':'Edit restored.');
 }
 function download(content,type,suffix) {
@@ -365,7 +412,7 @@ function fieldChange(input) {
   if(['value','minLength','maxLength','offset','length','x','y'].includes(key)) value/=1000;
   if(sim && page==='motion' && ['gravity','gravityEnabled','iterations','damping'].includes(key)) {
     sim.model.options[key]=value;
-    sim.refreshForces();measured=false;forceReport=null;render();hint('Simulation settings updated for this run.');
+    sim.refreshForces(physicsMode==='real' && sim.validity.valid);measured=false;forceReport=null;render();hint('Simulation settings updated for this run.');
     return;
   }
   if(mode!=='model')return;
@@ -405,8 +452,11 @@ function samplePose(index) {
   const sample=travel().poses[index];
   if(!sample) return;
   analysis.sampleIndex=index;
-  analysis.preview=Boolean(sample.positions);
-  previewModel=sample.positions ? {...design,joints:design.joints.map(j=>({...j,...sample.positions[j.id]}))} : null;
+  if(!sample.feasible || !sample.positions) return;
+  const candidate={...design,joints:design.joints.map(j=>({...j,...sample.positions[j.id]}))};
+  if(!poseValidity(candidate).valid) return;
+  analysis.previewIndex=index;
+  previewModel=candidate;
   forceReport=null;
 }
 function analysisChange(input, continuous=false) {
@@ -424,10 +474,10 @@ function analysisChange(input, continuous=false) {
       hint('Enter a sweep start angle smaller than the end angle.');renderPanel();return;
     }
     analysis[key]=value;cachedPath=undefined;
-    analysis.sampleIndex=null;analysis.preview=false;previewModel=null;
+    clearPreview();
   } else if(key==='driverId') {
     analysis.driverId=travel().drivers.find(driver=>String(driver.id)===input.value)?.id ?? null;
-    cachedPath=undefined;analysis.sampleIndex=null;analysis.preview=false;previewModel=null;
+    cachedPath=undefined;clearPreview();
   } else if(key==='metric') {
     analysis.metric=input.value;
   } else if(key==='pistonId'||key==='memberId') {
@@ -453,11 +503,24 @@ function action(act,b) {
   if(act==='results'||act==='force-range')return switchMode('analysis');
   if(act==='excursion'){visibility.excursion=!visibility.excursion;render();return;}
   if(act==='preview-analysis-pose'){samplePose(Number(b.dataset.index));render();return;}
-  if(act==='clear-analysis-pose'){analysis.preview=false;analysis.sampleIndex=null;previewModel=null;forceReport=null;render();return;}
+  if(act==='clear-analysis-pose'){clearPreview();render();return;}
   if(act==='pick-piston'){const p=lookup(current(),{type:'element',id:b.dataset.id});if(p)select({type:'element',id:p.id});return;}
   if(act==='close-panel'){page=null;return;}
+  if(act==='inspect-piston-alert'&&sim){
+    const issue=sim.validity.issues[0];
+    if(!sim.validity.valid){
+      switchMode('model');
+      if(issue?.element!=null) select({type:'element',id:issue.element});
+      hint(issue?.message || 'Repair the installation in Model.');
+    }else{page='motion';render();}
+    return;
+  }
+  if((act==='play'||act==='step')&&sim&&!sim.validity.valid){hint(defaultHint());return;}
+  if(act==='reverse-travel'&&sim && physicsMode==='forced' && sim.validity.valid){
+    sim.reverseForcedTravel();measured=false;forceReport=null;render();hint(sim.forcedReversed?'Forced travel reversed. The installed piston rating is unchanged.':'Following the configured piston direction.');return;
+  }
   if(act==='play'&&sim){if(playing)stop();else{playing=true;frame=requestAnimationFrame(tick);}render();hint(defaultHint());return;}
-  if(act==='step'&&sim){stop();sim.step(1/60);measured=true;forceReport=null;render();hint('Advanced one simulation frame (1/60 s).');return;}
+  if(act==='step'&&sim){stop();const previous=sim.time;sim.step(1/60);measured=measured || sim.time>previous;forceReport=null;render();hint(sim.motionMessage || 'Advanced one simulation frame (1/60 s).');return;}
   if(act==='reset'&&sim){stop();sim.reset();measured=false;forceReport=null;render();hint('Restored the design pose.');return;}
   if(act==='trace'&&sim){sim.setTracing(!sim.tracing);render();return;}
   if(act==='clear-traces'&&sim){sim.clearTraces();renderDrawing();return;}
@@ -500,12 +563,25 @@ document.addEventListener('pointerdown',e=>{if(menu&&!menu.contains(e.target))cl
 document.addEventListener('input',event=>{
   if(event.target.dataset.analysis==='sampleIndex')analysisChange(event.target,true);
 });
+document.addEventListener('focusin',event=>{
+  const field=event.target;
+  if(field.matches('input[data-field]:not([type="checkbox"])')) field.dataset.enteredValue=field.value;
+});
 document.addEventListener('focusout',event=>{
   const input=event.target,key=input.dataset?.analysis;
+  if(input.isConnected && input.dataset.enteredValue!==undefined && input.value!==input.dataset.enteredValue){
+    delete input.dataset.enteredValue;
+    fieldChange(input);
+    return;
+  }
   if(input.isConnected && ['minAngle','maxAngle'].includes(key) && input.valueAsNumber!==analysis[key]) analysisChange(input);
 });
 document.addEventListener('change',e=>{
   const el=e.target;
+  if(el.name==='physics-mode' && el.checked && sim){
+    stop();physicsMode=el.value==='forced'?'forced':'real';sim.physicsMode=physicsMode;
+    measured=false;forceReport=null;save();render();hint(defaultHint());return;
+  }
   if(el.id==='playback-speed'){
     speed=Number(el.value);
     try { localStorage.setItem(storeKey+'.speed',String(speed)); } catch { /* Session speed still applies. */ }
@@ -521,7 +597,10 @@ document.addEventListener('change',e=>{
     }
     return;
   }
-  if(el.dataset.field) return fieldChange(el);
+  if(el.dataset.field) {
+    delete el.dataset.enteredValue;
+    return fieldChange(el);
+  }
   if(el.dataset.visibility){
     const key=el.dataset.visibility;
     if(key==='loads')forcePolicy[mode]=el.checked;else visibility[key]=el.checked;

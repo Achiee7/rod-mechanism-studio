@@ -34,6 +34,7 @@ test('the piston retains its barrel and end fittings at either stroke limit', ()
   const compressed = pistonGeometry(piston, piston.minLength);
   const extended = pistonGeometry(piston, piston.maxLength);
   assert.deepEqual(compressed, extended);
+  assert.equal(compressed.valid, true);
   assert.equal(compressed.problem, undefined);
   assert(compressed.barrelLength > 0);
   assert(Math.abs(compressed.barrelLength + 2 * compressed.fittingLength - piston.minLength) < 1e-9);
@@ -41,8 +42,14 @@ test('the piston retains its barrel and end fittings at either stroke limit', ()
 
 test('a piston flags incompatible stroke and poses beyond configured reach', () => {
   const piston = { length: .9, minLength: .8, maxLength: 1.3 };
-  assert.match(pistonGeometry(piston, .7).problem, /Below compressed/);
-  assert.match(pistonGeometry(piston, 1.4).problem, /Beyond extended/);
-  assert.match(pistonGeometry({ ...piston, maxLength: 1.8 }, .95).problem, /Stroke exceeds/);
+  const below = pistonGeometry(piston, .7);
+  const beyond = pistonGeometry(piston, 1.4);
+  assert(below.configurationValid && !below.valid);
+  assert(beyond.configurationValid && !beyond.valid);
+  assert.match(below.problem, /Below compressed/);
+  assert.match(beyond.problem, /Beyond extended/);
+  const impossible = pistonGeometry({ ...piston, maxLength: 1.8 }, .95);
+  assert(!impossible.configurationValid && !impossible.valid);
+  assert.match(impossible.problem, /Stroke exceeds/);
   assert.match(pistonGeometry({ ...piston, maxLength: .7 }, .8).problem, /Invalid compressed or extended/);
 });

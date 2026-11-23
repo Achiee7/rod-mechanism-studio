@@ -88,8 +88,8 @@ export function normalizeMechanism(data) {
     const b = reference(element.b, label);
     if (a === b) throw new Error(`${label} requires two different joints.`);
     const length = Math.max(0.001, numeric(element.length, distance(model, a, b), `${label} length`));
-    const minLength = Math.max(0.001, numeric(element.minLength ?? element.min_length, length * 0.65, `${label} compressed length`));
-    const maxLength = Math.max(minLength, numeric(element.maxLength ?? element.max_length, length, `${label} extended length`));
+    const minLength = numeric(element.minLength ?? element.min_length, Math.max(0.001, length * 0.65), `${label} compressed length`);
+    const maxLength = numeric(element.maxLength ?? element.max_length, length, `${label} extended length`);
     const forceMode = element.forceMode ?? element.force_mode;
     return {
       id: element.id, a, b, length, minLength, maxLength,
@@ -101,7 +101,7 @@ export function normalizeMechanism(data) {
       torque: flipY * numeric(element.torque, 0, `${label} torque`),
       stiffness: Math.max(0, numeric(element.stiffness, 0, `${label} stiffness`)),
       damping: Math.max(0, numeric(element.damping, 0, `${label} damping`)),
-      autoReturn: element.autoReturn ?? element.auto_return ?? true,
+      autoReturn: element.autoReturn ?? element.auto_return ?? (element.kind === "actuator"),
       barrelEnd: element.barrelEnd === "b" || element.barrel_end === "b" ? "b" : "a",
       showForce: element.showForce ?? element.show_force ?? true,
     };

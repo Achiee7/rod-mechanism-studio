@@ -16,6 +16,8 @@ Build a browser studio for analyzing feasible 2D linkage paths, the forces they 
 - Added directional box selection and group editing, 0.1×–4× playback, force overlays, and fixed-barrel pistons with reversible mounting.
 - Analysis now sweeps a constrained linkage, previews poses, charts/exports forces and sizes pistons. The example has a rigid bracket; older projects preserve their original joints.
 - Verified 23 regressions including four-bar closure, hatch stroke stops, force balance and playback. The updated hatch sweep (−22° to 0°) needs 291.2 mm of travel and peaks at 324.59 N push.
+- Kept the analysis graph; unreachable samples hold the drawing at its last reachable pose. Both simulation modes enforce installed stroke and barrel geometry.
+- Real physics allows backdriving; Forced motion supports reverse travel and marks overloaded pistons. Verified below-rated, backdriven and forced movement, mounting errors, and hard stops.
 
 ## Scope for later
 

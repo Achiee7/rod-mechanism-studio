@@ -1,4 +1,7 @@
 import { cloneMechanism, isFixed, isPiston, isRigidLink, normalizeMechanism } from "./mechanism-model.js";
+import { pistonGeometry } from "./piston-physics.js";
+
+export { pistonGeometry } from "./piston-physics.js";
 
 export {
   cloneMechanism, createDemo, createMechanism, distance, isFixed, isPiston, nextId,
@@ -13,6 +16,14 @@ function axis(a, b) {
   const dy = b.y - a.y;
   const length = Math.hypot(dx, dy);
   return length > EPSILON ? { x: dx / length, y: dy / length, length } : { x: 1, y: 0, length };
+}
+
+function pistonDirection(element) {
+  return element.forceMode === "pull" ? -1 : 1;
+}
+
+function oppositePistonMode(mode) {
+  return mode === "pull" ? "push" : "pull";
 }
 
 function stroke(element, length) {
@@ -41,12 +52,12 @@ function massesOf(model) {
 function poweredForce(element, direction, speed) {
   const supportedForce = Math.abs(element.force ?? 0);
   const resistance = (element.damping ?? 0) * speed;
-  const pull = element.forceMode === "pull";
-  if (element.kind === "actuator") return (pull ? -supportedForce : supportedForce) - resistance;
+  const sign = pistonDirection(element);
+  if (element.kind === "actuator") return sign * clamp(supportedForce - resistance * sign, 0, supportedForce) || 0;
   const [min, max] = stroke(element, direction.length);
-  const deflection = pull ? direction.length - min : max - direction.length;
+  const deflection = sign < 0 ? direction.length - min : max - direction.length;
   const springForce = supportedForce + (element.stiffness ?? 0) * Math.max(0, deflection);
-  return pull ? Math.min(0, -springForce - resistance) : Math.max(0, springForce - resistance);
+  return sign * clamp(springForce - resistance * sign, 0, springForce) || 0;
 }
 
 function axialForce(element, a, b, direction) {
@@ -375,6 +386,40 @@ function rigidMembers(model, joints) {
   return [...links, ...rigidBodyPairs(model, joints)];
 }
 
+function rigidAngularRows(members, offsets) {
+  const links = members.filter(({ element }) => element?.kind === "body");
+  const joints = new Map(links.flatMap(({ a, b }) => [[a.id, a], [b.id, b]]));
+  const neighbors = neighborsOf(links.map(({ a, b }) => ({ a: a.id, b: b.id })));
+  const visited = new Set();
+  const rows = [];
+  for (const seed of joints.keys()) {
+    if (visited.has(seed)) continue;
+    const group = [...connectedFrom([seed], neighbors)].map(id => joints.get(id));
+    group.forEach(joint => visited.add(joint.id));
+    if (group.length < 3) continue;
+    const a = group[0];
+    const b = group.reduce((farthest, joint) => axis(a, joint).length > axis(a, farthest).length ? joint : farthest, a);
+    const direction = axis(a, b);
+    if (direction.length < 1e-8) continue;
+    const offsetAt = joint => (joint.y - a.y) * direction.x - (joint.x - a.x) * direction.y;
+    if (group.some(joint => Math.abs(offsetAt(joint)) > 1e-7)) continue;
+    // Along a straight, rigid multisegment body, distance derivatives alone
+    // permit a spurious lateral velocity at intermediate joints.
+    for (const joint of group.filter(item => item !== a && item !== b)) {
+      const span = ((joint.x - a.x) * direction.x + (joint.y - a.y) * direction.y) / direction.length;
+      const row = Array(offsets.size * 2).fill(0);
+      for (const [point, factor] of [[a, span - 1], [b, -span], [joint, 1]]) {
+        const offset = offsets.get(point.id);
+        if (offset === undefined) continue;
+        row[offset] -= factor * direction.y;
+        row[offset + 1] += factor * direction.x;
+      }
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
 function constraintsMatrix(members, offsets) {
   return members.map(({ a, b }) => {
     const row = Array(offsets.size * 2).fill(0);
@@ -416,7 +461,170 @@ function equilibrium(members, points, forces, checkRank = true) {
   };
 }
 
-export function currentForces(model, { dynamic = false } = {}) {
+export function poseValidity(model, { constraints, rigidTolerance = 1e-6 } = {}) {
+  const joints = indexJoints(model);
+  const pistons = Object.create(null);
+  const issues = [];
+  for (const joint of model.joints) {
+    if (!Number.isFinite(joint.x) || !Number.isFinite(joint.y)) {
+      issues.push({ code: "geometry", joint: joint.id, message: "Joint position is invalid." });
+    }
+  }
+  for (const element of model.elements.filter(isPiston)) {
+    const a = joints.get(element.a);
+    const b = joints.get(element.b);
+    const length = a && b ? axis(a, b).length : NaN;
+    const piston = pistonGeometry(element, length);
+    if (!a || !b || !Number.isFinite(length) || a.kind === "origin" || b.kind === "origin") {
+      piston.valid = false;
+      piston.code = "geometry";
+      piston.problem = "A piston requires two physical mounting joints";
+      piston.issues = [{ code: piston.code, message: piston.problem }];
+    }
+    const atMin = Number.isFinite(length) && Math.abs(length - piston.minLength) <= 1e-6;
+    const atMax = Number.isFinite(length) && Math.abs(length - piston.maxLength) <= 1e-6;
+    pistons[element.id] = {
+      ...piston, length, atStop: atMin && atMax ? "both" : atMin ? "min" : atMax ? "max" : null,
+    };
+    for (const issue of piston.issues) {
+      issues.push({ ...issue, element: element.id, message: `${element.name || `Piston ${element.id}`}: ${issue.message}.` });
+    }
+  }
+  for (const { a, b, length, element } of constraints ?? rigidMembers(model, joints)) {
+    if (Math.abs(axis(a, b).length - length) > rigidTolerance) {
+      issues.push({
+        code: "geometry", element: element?.id,
+        message: element?.name ? `${element.name}: the pose changes its rigid length.` : "The pose changes a rigid linkage length.",
+      });
+    }
+  }
+  return { valid: issues.length === 0, issues, pistons };
+}
+
+function constraintBasis(rows) {
+  const basis = [];
+  const project = vector => {
+    const result = vector.slice();
+    for (const unit of basis) {
+      const along = vectorDot(result, unit);
+      unit.forEach((value, index) => { result[index] -= along * value; });
+    }
+    return result;
+  };
+  for (const row of rows) {
+    const normal = project(row);
+    const norm = Math.hypot(...normal);
+    if (norm > 1e-8) basis.push(normal.map(value => value / norm));
+  }
+  return project;
+}
+
+export function pistonLoads(model, { validity = poseValidity(model) } = {}) {
+  const pistons = model.elements.filter(isPiston);
+  const results = Object.create(null);
+  if (!pistons.length) return results;
+  const joints = indexJoints(model);
+  const masses = massesOf(model);
+  const free = model.joints.filter(joint => !isFixed(joint));
+  const offsets = new Map(free.map((joint, index) => [joint.id, index * 2]));
+  const weights = free.flatMap(joint => {
+    const weight = 1 / Math.sqrt(masses.get(joint.id));
+    return [weight, weight];
+  });
+  const weighted = row => row.map((value, index) => value * weights[index]);
+  const rigid = rigidMembers(model, joints);
+  const project = constraintBasis([
+    ...constraintsMatrix(rigid, offsets), ...rigidAngularRows(rigid, offsets),
+  ].map(weighted));
+  const { forces } = loadsOn(model, masses, joints, true);
+  const load = weighted(free.flatMap(joint => {
+    const force = forces.get(joint.id);
+    return [force.x, force.y];
+  }));
+  const projectedLoad = project(load);
+  const members = pistons.flatMap(element => {
+    const a = joints.get(element.a);
+    const b = joints.get(element.b);
+    return a && b ? [{ a, b, element }] : [];
+  });
+  const axes = constraintsMatrix(members, offsets).map(row => project(weighted(row)));
+  const memberAxes = new Map(members.map(({ element }, index) => [element.id, axes[index]]));
+  const contactAxes = members.filter(({ element }) => validity.pistons[element.id]?.atStop);
+  for (const element of pistons) {
+    const geometry = validity.pistons[element.id];
+    const length = geometry?.length;
+    const direction = pistonDirection(element);
+    const ratedForce = Math.abs(element.force ?? 0) * direction;
+    const availableForce = Number.isFinite(length) ? poweredForce(element, { length }, 0) : ratedForce;
+    const mode = direction > 0 ? "push" : "pull";
+    const commandMode = element.commandMode ?? mode;
+    const commandDirection = commandMode === "pull" ? -1 : 1;
+    const opposite = commandDirection !== direction;
+    const commandAvailableForce = opposite ? 0 : availableForce;
+    const vector = memberAxes.get(element.id);
+    const mobility = vector ? vectorDot(vector, vector) : 0;
+    const result = {
+      ratedForce, availableForce, requiredForce: null, margin: null, utilization: null, overload: null,
+      status: "unknown", mode, commandMode, atStop: geometry?.atStop ?? null,
+      commandAvailableForce, commandRequiredForce: null, commandAssessment: "unknown",
+      ratedMargin: null, ratedOverload: null,
+      length, minLength: geometry?.minLength, maxLength: geometry?.maxLength,
+      configurationValid: geometry?.configurationValid ?? false,
+      driveState: element.driveState ?? "rated", appliedForce: element.appliedForce ?? null,
+      limitForce: element.limitForce ?? null,
+      basis: "marginal-hold",
+      reason: "The force demand could not be determined.",
+    };
+    if (!geometry?.valid || !validity.valid) {
+      result.status = "invalid";
+      result.reason = geometry?.problem || "The assembly has an incompatible pose.";
+    } else if (mobility < 1e-10 || geometry.atStop === "both") {
+      result.status = "blocked";
+      result.reason = "This pose allows no piston travel.";
+    } else if (contactAxes.some(({ element: other }) => other.id !== element.id
+      && Math.abs(vectorDot(vector, memberAxes.get(other.id))) > 1e-8)) {
+      result.reason = "The load depends on a coupled piston’s stroke-stop reaction.";
+    } else {
+      const { a, b } = members.find(member => member.element.id === element.id);
+      const installed = axialForce(element, a, b, axis(a, b));
+      const required = installed - vectorDot(vector, projectedLoad) / mobility;
+      const commandRequiredForce = opposite ? required - availableForce : required;
+      const directional = commandRequiredForce * commandDirection;
+      const capacity = Math.abs(commandAvailableForce);
+      result.requiredForce = required;
+      result.commandRequiredForce = commandRequiredForce;
+      result.ratedMargin = Math.abs(availableForce) - required * direction;
+      result.ratedOverload = result.ratedMargin < -1e-6;
+      result.margin = capacity - directional;
+      result.utilization = capacity > 1e-9 ? Math.max(0, directional) / capacity : directional > 1e-6 ? null : 0;
+      result.overload = directional > capacity + 1e-6;
+      result.status = result.overload ? "overload" : directional < -1e-6 ? "assisted" : "ready";
+      if (opposite) {
+        result.commandAssessment = result.overload ? "externally-driven" : result.status === "assisted" ? "load-assisted" : "neutral";
+        result.reason = result.overload ? "Travel in this direction requires outside force against the installed piston or load."
+          : result.status === "assisted" ? "The load overcomes the installed piston and assists return travel."
+            : "The load and installed piston balance. The piston supplies no drive in the commanded direction.";
+      } else {
+        result.commandAssessment = "rated-direction";
+        result.reason = result.overload ? "The installed force is below the load demand in this direction."
+          : result.status === "assisted" ? "The external load assists travel in this direction."
+            : "The installed force can balance this pose.";
+      }
+    }
+    if (geometry?.atStop === (commandDirection > 0 ? "max" : "min") && result.status !== "invalid") {
+      result.reason += " The piston is at its commanded stroke limit.";
+    } else if (!opposite && result.overload && geometry?.atStop === (commandDirection > 0 ? "min" : "max")) {
+      result.reason += " The load has reached the opposite stroke stop.";
+    }
+    if (result.driveState === "blocked" && result.status !== "invalid") {
+      result.reason += " The commanded motion is blocked by the linkage or another piston.";
+    }
+    results[element.id] = result;
+  }
+  return results;
+}
+
+export function currentForces(model, { dynamic = false, validity = poseValidity(model) } = {}) {
   const joints = indexJoints(model);
   const masses = massesOf(model);
   const physical = model.joints.filter(joint => joint.kind !== "origin");
@@ -426,6 +634,7 @@ export function currentForces(model, { dynamic = false } = {}) {
   const byJoint = Object.create(null);
   const byElement = Object.create(null);
   const arrows = [];
+  const pistons = pistonLoads(model, { validity });
   for (const joint of physical) {
     byJoint[joint.id] = { applied: { x: 0, y: 0 }, member: { x: 0, y: 0 }, support: null, net: { x: 0, y: 0 } };
   }
@@ -460,10 +669,10 @@ export function currentForces(model, { dynamic = false } = {}) {
     if (!a || !b || a.kind === "origin" || b.kind === "origin") continue;
     const direction = axis(a, b);
     const powered = element.kind === "motor" || isPiston(element);
-    const force = dynamic ? element.axialForce ?? 0 : powered ? axialForce(element, a, b, direction) : null;
+    const force = dynamic ? element.axialForce ?? (isPiston(element) ? null : 0) : powered ? axialForce(element, a, b, direction) : null;
     const limitForce = dynamic && isPiston(element) ? element.limitForce ?? 0 : null;
     byElement[element.id] = { axialForce: force, limitForce, estimated: bodyEstimate(element) };
-    if (powered) endpointForces(a, b, force, element.kind === "motor" ? "motor" : "piston", element, element.kind === "motor");
+    if (powered && force != null) endpointForces(a, b, force, element.kind === "motor" ? "motor" : "piston", element, element.kind === "motor");
     else if (force != null) endpointForces(a, b, force, "member", element, false, { estimated: bodyEstimate(element) });
     if (dynamic && element.kind === "motor" && element.memberAxialForce) {
       byElement[element.id].memberAxialForce = element.memberAxialForce;
@@ -481,11 +690,15 @@ export function currentForces(model, { dynamic = false } = {}) {
       member.y = joint.reactionY ?? member.y;
       byJoint[joint.id].net = { x: applied.x + member.x, y: applied.y + member.y };
     }
-    return { arrows, joints: byJoint, elements: byElement, balanceResidual: null, status: "dynamic" };
+    return {
+      arrows, joints: byJoint, elements: byElement, pistons, validity, balanceResidual: null, status: "dynamic",
+      strokeViolation: validity.issues.some(issue => ["stroke", "piston-config"].includes(issue.code)),
+      geometryViolation: validity.issues.some(issue => issue.code === "geometry"),
+    };
   }
   const members = rigidMembers(model, joints);
-  const geometryViolation = members.some(({ a, b, length }) => Math.abs(axis(a, b).length - length) > 1e-6);
-  let strokeViolation = false;
+  const geometryViolation = validity.issues.some(issue => issue.code === "geometry");
+  let strokeViolation = validity.issues.some(issue => issue.code === "stroke" || issue.code === "piston-config");
   const stops = model.elements.filter(isPiston).flatMap(element => {
     const a = joints.get(element.a);
     const b = joints.get(element.b);
@@ -516,6 +729,7 @@ export function currentForces(model, { dynamic = false } = {}) {
       if (element) {
         const property = side ? "limitForce" : element.kind === "motor" ? "memberAxialForce" : "axialForce";
         byElement[element.id][property] = force;
+        if (side) pistons[element.id].limitForce = force;
         byElement[element.id].estimated ||= solution.indeterminate;
       }
       endpointForces(a, b, force, side ? "stroke" : "member", element, false, {
@@ -528,7 +742,7 @@ export function currentForces(model, { dynamic = false } = {}) {
     }
   }
   return {
-    arrows, joints: byJoint, elements: byElement, balanceResidual: solution.residual, strokeViolation, geometryViolation,
+    arrows, joints: byJoint, elements: byElement, pistons, validity, balanceResidual: solution.residual, strokeViolation, geometryViolation,
     indeterminate: solution.balanced && solution.indeterminate && !strokeViolation && !geometryViolation,
     status: solution.balanced && !strokeViolation && !geometryViolation ? "balanced" : "unbalanced",
   };
@@ -580,7 +794,8 @@ function drivenTangent(group, offsets, pivot, driven) {
     velocity: group.moving.flatMap(joint => [pivot.y - joint.y, joint.x - pivot.x]),
   };
   const width = offsets.size * 2;
-  const { matrix, columns } = reduceRows(constraintsMatrix(group.members, offsets), width, 1e-6);
+  const equations = [...constraintsMatrix(group.members, offsets), ...rigidAngularRows(group.members, offsets)];
+  const { matrix, columns } = reduceRows(equations, width, 1e-6);
   const mobility = width - columns.length;
   if (mobility !== 1) return { mobility, velocity: null };
   const free = Array.from({ length: width }, (_, index) => index).find(index => !columns.includes(index));
@@ -774,15 +989,15 @@ export function analyzePath(source, options = {}) {
     let withinStroke = true;
     for (const element of pistons) {
       const { arm, configuredForce, direction } = work.pistons.get(element.id);
-      const [min, max] = stroke(element, direction.length);
-      const within = direction.length >= min - 1e-6 && direction.length <= max + 1e-6;
+      const geometry = pistonGeometry(element, direction.length);
+      const within = geometry.valid;
       withinStroke &&= within;
       const singular = !velocity || Math.abs(arm) < 0.005;
       const force = singular || coupled ? null : -work.externalWork / arm;
       const assist = !velocity || coupled || Math.abs(work.handle.arm) < 0.005 ? null : -work.residualWork / work.handle.arm;
       output.pistons[element.id] = {
         length: direction.length, force, assistForce: assist, handleId: work.handle.id, configuredForce, momentArm: arm,
-        status: !within ? "out_of_stroke" : coupled ? "unavailable" : singular ? "singular" : "ok",
+        status: !geometry.configurationValid ? "invalid" : !within ? "out_of_stroke" : coupled ? "unavailable" : singular ? "singular" : "ok",
       };
       trackRange(result.requiredLengthRanges, element.id, direction.length);
       if (force != null) {
@@ -821,8 +1036,7 @@ export function analyzePath(source, options = {}) {
 
   const startWithinStroke = pistons.every(element => {
     const { length: current } = axis(joints.get(element.a), joints.get(element.b));
-    const [min, max] = stroke(element, current);
-    return current >= min - 1e-6 && current <= max + 1e-6;
+    return pistonGeometry(element, current).valid;
   });
   function sweep(values) {
     group.moving.forEach((joint, index) => Object.assign(joint, initialPositions[index]));
@@ -837,8 +1051,7 @@ export function analyzePath(source, options = {}) {
         if (index !== subdivisions && solved) {
           reachable &&= pistons.every(element => {
             const { length: value } = axis(joints.get(element.a), joints.get(element.b));
-            const [min, max] = stroke(element, value);
-            return value >= min - 1e-6 && value <= max + 1e-6;
+            return pistonGeometry(element, value).valid;
           });
         }
       }
@@ -864,6 +1077,9 @@ export function analyzePath(source, options = {}) {
     };
   }
   if (coupled) return unavailable("A piston connects two independently moving linkages. Select a model with one coupled degree of freedom.", "partial");
+  if (pistons.some(element => !pistonGeometry(element).configurationValid)) {
+    return unavailable("An installed piston has an incompatible barrel or stroke configuration.", "partial");
+  }
   if (!result.poses.some(row => row.feasible)) {
     return unavailable(startWithinStroke ? "No reachable poses in this sweep." : "The drawn pose lies outside a configured piston stroke.", "partial");
   }
@@ -894,10 +1110,48 @@ function rigidBodyPairs(model, joints) {
 }
 
 export class Simulation {
-  constructor(source) {
+  constructor(source, { physicsMode = "real" } = {}) {
     this.initialModel = physicalModel(source);
+    const retained = new Set(this.initialModel.elements.map(element => String(element.id)));
+    this.missingPistons = (source.elements ?? []).filter(element => isPiston(element) && !retained.has(String(element.id)));
     this.tracing = false;
+    this.physicsMode = physicsMode;
     this.reset();
+  }
+
+  get physicsMode() { return this._physicsMode; }
+
+  set physicsMode(value) {
+    const mode = value === "forced" ? "forced" : "real";
+    if (this._physicsMode === mode) return;
+    this._physicsMode = mode;
+    this.motionMessage = "";
+    if (this.hinge) this.hinge.speed = 0;
+    for (const joint of this.model?.joints ?? []) joint.vx = joint.vy = 0;
+    if (this.members) this.refreshForces(mode === "real" && this.validity.valid);
+    this.resetForcedTravel();
+  }
+
+  resetForcedTravel() {
+    this.forcedReversed = false;
+    for (const { element } of this.pistons ?? []) {
+      if (this.physicsMode === "forced") element.commandMode = element.forceMode;
+      else delete element.commandMode;
+      element.driveState = !this.validity.valid ? "blocked" : this.physicsMode === "forced" ? "forced" : "rated";
+    }
+  }
+
+  reverseForcedTravel() {
+    if (this.physicsMode !== "forced" || !this.pistons.length) return this.forcedReversed;
+    this.forcedReversed = !this.forcedReversed;
+    this.motionMessage = "";
+    for (const joint of this.model.joints) joint.vx = joint.vy = 0;
+    if (this.hinge) this.hinge.speed = 0;
+    for (const { element } of this.pistons) {
+      element.commandMode = oppositePistonMode(element.commandMode);
+      element.driveState = this.validity.valid ? "forced" : "blocked";
+    }
+    return this.forcedReversed;
   }
 
   reset() {
@@ -915,11 +1169,49 @@ export class Simulation {
     ];
     this.hinge = this.findHinge();
     this.time = 0;
+    this.motionMessage = "";
     this.traces = new Map();
-    this.settle();
-    this.refreshForces();
+    this.validity = this.inspectPose();
+    for (const joint of this.model.joints) joint.vx = joint.vy = 0;
+    this.refreshForces(this.physicsMode === "real" && this.validity.valid);
+    this.resetForcedTravel();
     this.recordTraces();
     return this.model;
+  }
+
+  inspectPose() {
+    const validity = poseValidity(this.model, { constraints: this.constraints, rigidTolerance: 1e-5 });
+    for (const element of this.missingPistons) {
+      validity.issues.push({
+        code: "geometry", element: element.id,
+        message: `${element.name || `Piston ${element.id}`}: two distinct physical mounting joints are required.`,
+      });
+    }
+    return { ...validity, valid: validity.issues.length === 0 };
+  }
+
+  result(accepted, extra) {
+    return { accepted, maxConstraintError: this.maxConstraintError(), validity: this.validity, ...extra };
+  }
+
+  snapshot() {
+    return {
+      joints: this.model.joints.map(joint => ({
+        x: joint.x, y: joint.y, vx: joint.vx, vy: joint.vy, fx: joint.fx, fy: joint.fy,
+        reactionX: joint.reactionX, reactionY: joint.reactionY, internalX: joint.internalX, internalY: joint.internalY,
+      })),
+      elements: this.model.elements.map(element => ({
+        forceMode: element.forceMode, commandMode: element.commandMode, axialForce: element.axialForce, limitForce: element.limitForce,
+        memberAxialForce: element.memberAxialForce, driveState: element.driveState, appliedForce: element.appliedForce,
+      })),
+      hinge: this.hinge && { angle: this.hinge.angle, speed: this.hinge.speed },
+    };
+  }
+
+  restore(snapshot) {
+    this.model.joints.forEach((joint, index) => Object.assign(joint, snapshot.joints[index]));
+    this.model.elements.forEach((element, index) => Object.assign(element, snapshot.elements[index]));
+    if (this.hinge) Object.assign(this.hinge, snapshot.hinge);
   }
 
   findHinge() {
@@ -1050,30 +1342,50 @@ export class Simulation {
 
   poseJoint(id, x, y) {
     const joint = this.joints.get(id);
-    if (!joint || isFixed(joint) || !Number.isFinite(x) || !Number.isFinite(y)) return { maxConstraintError: this.maxConstraintError() };
+    this.motionMessage = "";
+    if (!this.validity.valid) {
+      this.motionMessage = this.validity.issues[0].message;
+      return this.result(false);
+    }
+    if (!joint || isFixed(joint) || !Number.isFinite(x) || !Number.isFinite(y)) return this.result(false);
+    const before = this.snapshot();
+    let clamped = false;
     if (this.hinge) {
       const { pivot, angle } = this.hinge;
       const rest = this.hinge.rest.find(item => item.joint === joint);
       const goal = Math.atan2(y - pivot.y, x - pivot.x) - Math.atan2(rest.y, rest.x);
       const delta = Math.atan2(Math.sin(goal - angle), Math.cos(goal - angle));
-      this.moveHinge(angle + delta);
-      this.settle();
-      this.refreshForces();
-      this.recordTraces();
-      return { maxConstraintError: this.maxConstraintError() };
+      clamped = this.moveHinge(angle + delta) !== null;
+    } else {
+      const startX = joint.x;
+      const startY = joint.y;
+      const steps = clamp(Math.ceil(Math.hypot(x - startX, y - startY) / 0.05), 1, 60);
+      for (let step = 1; step <= steps; step++) {
+        const previous = this.snapshot();
+        joint.x = startX + (x - startX) * step / steps;
+        joint.y = startY + (y - startY) * step / steps;
+        this.solvePositions(Math.max(32, this.model.options.iterations), 1 / 60, joint.id);
+        this.solvePositions(144, 1 / 60);
+        if (!this.inspectPose().valid) {
+          this.restore(previous);
+          clamped = true;
+          break;
+        }
+      }
     }
-    const startX = joint.x;
-    const startY = joint.y;
-    const steps = clamp(Math.ceil(Math.hypot(x - startX, y - startY) / 0.05), 1, 60);
-    for (let step = 1; step <= steps; step++) {
-      joint.x = startX + (x - startX) * step / steps;
-      joint.y = startY + (y - startY) * step / steps;
-      this.solvePositions(24, 1 / 60, joint.id);
+    const validity = this.inspectPose();
+    if (!validity.valid) {
+      this.restore(before);
+      this.motionMessage = validity.issues[0].message;
+      return this.result(false);
     }
-    const result = this.settle();
-    this.refreshForces();
+    this.validity = validity;
+    if (this.hinge) this.hinge.speed = 0;
+    for (const item of this.model.joints) item.vx = item.vy = 0;
+    this.refreshForces(this.physicsMode === "real");
     this.recordTraces();
-    return result;
+    if (clamped) this.motionMessage = "Piston stroke limits the dragged pose.";
+    return this.result(true, { clamped });
   }
 
   settle(iterations = Math.max(72, this.model.options.iterations)) {
@@ -1089,8 +1401,8 @@ export class Simulation {
     return { maxConstraintError: this.maxConstraintError() };
   }
 
-  refreshForces() {
-    const { forces, appliedAxial } = loadsOn(this.model, this.masses, this.joints, true);
+  refreshForces(includePistons = true) {
+    const { forces, appliedAxial } = loadsOn(this.model, this.masses, this.joints, includePistons);
     for (const joint of this.model.joints) {
       const force = forces.get(joint.id);
       joint.fx = force.x;
@@ -1101,32 +1413,74 @@ export class Simulation {
       joint.internalY = 0;
     }
     for (const { element } of this.members) {
-      element.axialForce = appliedAxial.get(element.id) ?? 0;
+      element.axialForce = !includePistons && isPiston(element) ? null : appliedAxial.get(element.id) ?? 0;
+      if (isPiston(element)) element.appliedForce = element.axialForce;
       element.limitForce = 0;
       if (element.kind === "motor") element.memberAxialForce = 0;
     }
   }
 
   step(dt = 1 / 60) {
-    if (!(dt > 0) || !Number.isFinite(dt)) return { maxConstraintError: this.maxConstraintError() };
+    if (!(dt > 0) || !Number.isFinite(dt)) return this.result(false);
+    this.validity = this.inspectPose();
+    if (!this.validity.valid) {
+      this.motionMessage = this.validity.issues[0].message;
+      return this.result(false);
+    }
     const elapsed = Math.min(dt, 0.1);
     const steps = Math.ceil(elapsed * 120);
-    for (let index = 0; index < steps; index++) this.integrate(elapsed / steps);
-    this.time += elapsed;
+    this.motionMessage = "";
+    const stride = elapsed / steps;
+    let completed = 0;
+    for (let index = 0; index < steps; index++) {
+      const before = this.snapshot();
+      const driven = this.physicsMode === "forced" ? this.forceDrive(stride) : (this.integrate(stride), true);
+      if (!driven) break;
+      let validity = this.inspectPose();
+      if (!validity.valid && !this.hinge && this.physicsMode === "real") {
+        this.solvePositions(220, stride);
+        validity = this.inspectPose();
+        if (validity.valid) {
+          this.refreshForces();
+          for (const joint of this.model.joints) joint.vx = joint.vy = 0;
+        }
+      }
+      if (!validity.valid) {
+        this.restore(before);
+        this.motionMessage = validity.issues[0].message;
+        break;
+      }
+      this.validity = validity;
+      if (this.physicsMode === "real") {
+        for (const { element, a, b } of this.pistons) {
+          const direction = axis(a, b);
+          const relativeSpeed = (b.vx - a.vx) * direction.x + (b.vy - a.vy) * direction.y;
+          element.driveState = relativeSpeed * pistonDirection(element) < -1e-5 ? "backdriven"
+            : validity.pistons[element.id].atStop && Math.abs(relativeSpeed) <= 1e-5 ? "stroke-stop" : "rated";
+        }
+      }
+      completed++;
+    }
+    this.time += completed * stride;
     this.recordTraces();
-    return { maxConstraintError: this.maxConstraintError() };
+    return this.result(completed === steps);
   }
 
-  integrate(dt) {
+  reversePistons(modeKey = "forceMode") {
     for (const { element, a, b } of this.pistons) {
-      if (element.autoReturn === false) continue;
+      if (!element.autoReturn) continue;
       const direction = axis(a, b);
       const [min, max] = stroke(element, direction.length);
       const tolerance = Math.min(1e-6, (max - min) * 0.01);
       if (max <= min + EPSILON) continue;
-      if (element.forceMode !== "pull" && direction.length >= max - tolerance) element.forceMode = "pull";
-      else if (element.forceMode === "pull" && direction.length <= min + tolerance) element.forceMode = "push";
+      if (element[modeKey] !== "pull" && direction.length >= max - tolerance) element[modeKey] = "pull";
+      else if (element[modeKey] === "pull" && direction.length <= min + tolerance) element[modeKey] = "push";
     }
+  }
+
+  integrate(dt) {
+    this.reversePistons();
+    for (const { element } of this.pistons) element.driveState = "rated";
     this.refreshForces();
     if (this.hinge) {
       this.integrateHinge(dt);
@@ -1155,6 +1509,87 @@ export class Simulation {
       joint.vy = (joint.y - start.y) / dt;
     }
     this.clampPistonVelocities(dt, true);
+  }
+
+  forceDrive(dt) {
+    if (!this.pistons.length) {
+      this.integrate(dt);
+      return true;
+    }
+    this.reversePistons("commandMode");
+    const commands = this.pistons.map(member => {
+      const { element, a, b } = member;
+      const direction = axis(a, b);
+      const [min, max] = stroke(element, direction.length);
+      const sign = element.commandMode === "pull" ? -1 : 1;
+      const distance = Math.min(0.35, (max - min) * 1.15) * dt;
+      const requested = clamp(direction.length + sign * distance, min, max);
+      return { member, direction, sign, requested, active: Math.abs(requested - direction.length) > 1e-7 };
+    });
+    const active = commands.filter(command => command.active);
+    const start = this.snapshot();
+    this.refreshForces(false);
+    for (const { member, active: moving } of commands) member.element.driveState = moving ? "forced" : "stroke-stop";
+    if (!active.length) {
+      this.motionMessage = "The commanded piston stroke limit is reached.";
+      for (const joint of this.model.joints) joint.vx = joint.vy = 0;
+      if (this.hinge) this.hinge.speed = 0;
+      return false;
+    }
+    let success = false;
+    const respectsCommands = () => commands.every(({ member, direction, sign, active: moving }) => {
+      const progress = sign * (axis(member.a, member.b).length - direction.length);
+      return moving ? progress >= -1e-6 : Math.abs(progress) <= 1e-6;
+    });
+    const recorded = this.snapshot();
+    if (this.hinge) {
+      const { pivot, angle } = this.hinge;
+      const hingeCommands = active.map(({ member: { a, b }, direction, requested }) => {
+        const arm = (isFixed(b) ? 0 : torqueAt(b, pivot, direction.x, direction.y))
+          - (isFixed(a) ? 0 : torqueAt(a, pivot, direction.x, direction.y));
+        return Math.abs(arm) < 1e-7 ? null : (requested - direction.length) / arm;
+      });
+      if (hingeCommands.every(Number.isFinite)
+        && hingeCommands.every(value => Math.sign(value) === Math.sign(hingeCommands[0]))) {
+        const advance = Math.sign(hingeCommands[0]) * Math.min(0.1, ...hingeCommands.map(Math.abs));
+        this.moveHinge(angle + advance);
+        success = Math.abs(this.hinge.angle - angle) > 1e-7 && respectsCommands() && this.inspectPose().valid;
+      }
+    } else {
+      function requests(entries) {
+        return new Map(entries.map(({ member, requested }) => [member, requested]));
+      }
+      const plans = [requests(active)];
+      if (active.length > 1) for (const command of active) plans.push(requests([command]));
+      for (const plan of plans) {
+        this.restore(recorded);
+        this.solvePositions(Math.max(144, this.model.options.iterations), dt, undefined, false, plan);
+        success = respectsCommands() && this.inspectPose().valid && [...plan].every(([member, length]) =>
+          Math.abs(axis(member.a, member.b).length - length) <= 2e-6);
+        if (success) break;
+      }
+    }
+    if (!success) {
+      this.restore(start);
+      for (const { member, active: moving } of commands) member.element.driveState = moving ? "blocked" : "stroke-stop";
+      for (const joint of this.model.joints) joint.vx = joint.vy = 0;
+      if (this.hinge) this.hinge.speed = 0;
+      this.motionMessage = "The linkage, piston directions, or another stroke stop blocks the commanded movement.";
+      return false;
+    }
+    for (const [index, joint] of this.model.joints.entries()) {
+      const prior = start.joints[index];
+      joint.vx = (joint.x - prior.x) / dt;
+      joint.vy = (joint.y - prior.y) / dt;
+    }
+    for (const { member, sign } of commands) {
+      const { element, a, b } = member;
+      const { length } = axis(a, b);
+      const [min, max] = stroke(element, length);
+      const limit = sign > 0 ? max : min;
+      if (Math.abs(length - limit) <= 1e-6 && !element.autoReturn) element.driveState = "stroke-stop";
+    }
+    return true;
   }
 
   clampPistonVelocities(dt, atStop = false) {
@@ -1195,10 +1630,10 @@ export class Simulation {
     }
   }
 
-  solvePositions(iterations, dt, preferredId, readForces = false) {
-    const project = ({ element, a, b, length }, limited = false) => {
+  solvePositions(iterations, dt, preferredId, readForces = false, targets = new Map()) {
+    const project = ({ element, a, b, length }, limited = false, forcedLength) => {
       const direction = axis(a, b);
-      const target = limited ? clamp(direction.length, ...stroke(element, direction.length)) : length;
+      const target = forcedLength ?? (limited ? clamp(direction.length, ...stroke(element, direction.length)) : length);
       const error = direction.length - target;
       if (Math.abs(error) <= EPSILON) return Math.abs(error);
       const wa = this.inverseMasses.get(a.id) * (a.id === preferredId ? 0.02 : 1);
@@ -1221,6 +1656,7 @@ export class Simulation {
     for (let iteration = 0; iteration < iterations; iteration++) {
       let worst = 0;
       for (const member of this.constraints) worst = Math.max(worst, project(member));
+      for (const [member, length] of targets) worst = Math.max(worst, project(member, false, length));
       for (const piston of this.pistons) worst = Math.max(worst, project(piston, true));
       if (worst <= 1e-8) break;
     }
