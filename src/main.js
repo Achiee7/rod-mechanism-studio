@@ -563,8 +563,17 @@ document.addEventListener('pointerdown',e=>{if(menu&&!menu.contains(e.target))cl
 document.addEventListener('input',event=>{
   if(event.target.dataset.analysis==='sampleIndex')analysisChange(event.target,true);
 });
+document.addEventListener('focusin',event=>{
+  const field=event.target;
+  if(field.matches('input[data-field]:not([type="checkbox"])')) field.dataset.enteredValue=field.value;
+});
 document.addEventListener('focusout',event=>{
   const input=event.target,key=input.dataset?.analysis;
+  if(input.isConnected && input.dataset.enteredValue!==undefined && input.value!==input.dataset.enteredValue){
+    delete input.dataset.enteredValue;
+    fieldChange(input);
+    return;
+  }
   if(input.isConnected && ['minAngle','maxAngle'].includes(key) && input.valueAsNumber!==analysis[key]) analysisChange(input);
 });
 document.addEventListener('change',e=>{
@@ -588,7 +597,10 @@ document.addEventListener('change',e=>{
     }
     return;
   }
-  if(el.dataset.field) return fieldChange(el);
+  if(el.dataset.field) {
+    delete el.dataset.enteredValue;
+    return fieldChange(el);
+  }
   if(el.dataset.visibility){
     const key=el.dataset.visibility;
     if(key==='loads')forcePolicy[mode]=el.checked;else visibility[key]=el.checked;
