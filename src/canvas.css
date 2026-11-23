@@ -30,7 +30,7 @@
 
 .drawing-hit { fill: transparent; stroke: transparent; stroke-width: 19; }
 circle.drawing-hit { stroke-width: 1; }
-.drawing-label, .force-label, .result-force-label, .moment-label, .piston-warning {
+.drawing-label, .force-label, .result-force-label, .moment-label {
   paint-order: stroke;
   stroke: #f7f9f7;
   stroke-width: 4px;
@@ -71,8 +71,11 @@ circle.drawing-hit { stroke-width: 1; }
 .piston-seal { stroke-width: 1.45; opacity: .85; }
 .piston-limit { stroke: var(--part-ink); stroke-width: 1; opacity: .72; stroke-dasharray: 2 2; pointer-events: none; }
 .piston-limit-extended { stroke-dasharray: 4 2; }
-.drawing-element.piston-problem .piston-cylinder { stroke: #ac494a; stroke-dasharray: 4 2; }
-.piston-warning { fill: #9b3338; font-weight: 650; }
+.piston-mount-reference { stroke: #a73c42; stroke-width: 1.7; stroke-dasharray: 2 5; pointer-events: none; }
+.piston-mount-indicator { fill: none; stroke: #a73c42; stroke-width: 1.6; stroke-dasharray: 3 2; pointer-events: none; }
+.piston-status-box { fill: #fff3f1; stroke: #c16d70; stroke-width: 1; }
+.piston-status-label { fill: #8d272c; font-size: 11px; font-weight: 650; pointer-events: none; }
+.drawing-element.piston-overload { --part-ink: #ad3439; --cylinder-fill: #ffe6e4; }
 .motor-link { stroke-width: 2.15; stroke-dasharray: 5 4; }
 .motor-arrow { fill: none; stroke: var(--part-ink); stroke-width: 1.1; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 .drawing-element.selected .rod-stroke { stroke-width: 4.8; }

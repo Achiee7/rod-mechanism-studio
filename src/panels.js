@@ -106,7 +106,7 @@ function strokeInfo(part, length) {
   return 'Within stroke';
 }
 
-function sizeSection(model, part, {editable = false, sample, pathEstimate = false, reachable = true} = {}) {
+function sizeSection(model, part, {editable = false, sample, pathEstimate = false} = {}) {
   const length = sample?.length ?? distance(model,part.a,part.b);
   const fit = strokeInfo(part,length);
   const inStroke = length >= part.minLength-1e-6 && length <= part.maxLength+1e-6;
@@ -116,11 +116,7 @@ function sizeSection(model, part, {editable = false, sample, pathEstimate = fals
   const required = pathEstimate ? sample?.force : balance?.force;
   const rated = (part.forceMode === 'pull' ? -1 : 1) * part.force;
   const configured = sample?.configuredForce ?? assist?.configuredForce ?? rated;
-  const effort = reachable ? (sample?.assistForce ?? assist?.handForce) : null;
-  const oppose = required && configured && Math.sign(required) !== Math.sign(configured);
-  const margin = reachable && inStroke && Number.isFinite(required) && Number.isFinite(configured)
-    ? oppose ? 'Opposing force direction' : signed(Math.abs(configured) - Math.abs(required))
-    : 'Unavailable';
+  const effort = sample?.assistForce ?? assist?.handForce;
   return section(pathEstimate ? 'Sample piston sizing' : 'Piston sizing at the current pose',
     row('Connection length',millimeters(length)),
     row('Stroke-limited length',millimeters(Math.min(part.maxLength,Math.max(part.minLength,length)))),
@@ -129,13 +125,12 @@ function sizeSection(model, part, {editable = false, sample, pathEstimate = fals
     row('Stroke check',fit),
     barrelCheck.problem && h('p','Single-stage barrel: ' + barrelCheck.problem + '.','rm-path-message'),
     row('Configured rating (+ push)',signed(rated)),
-    reachable && configured !== rated && row('Effective configured force',signed(configured)),
-    Number.isFinite(required) ? row(reachable ? 'Required hold (+ push)' : 'Geometry-only hold demand (+ push)',signed(required)) : h('p',
+    configured !== rated && row('Effective configured force',signed(configured)),
+    Number.isFinite(required) ? row('Single-piston hold (+ push)',signed(required)) : h('p',
       !inStroke ? pistonState('out_of_stroke') : pathEstimate ? pistonState(sample?.status)
         : 'A grounded pivot, a moving lever and an off-axis attachment are needed to determine hold force at this pose.',
       'rm-note'),
     Number.isFinite(required) && row('Required direction',direction(required)),
-    row('Force headroom',margin),
     row('Vertical hand effort',handEffort(effort)),
     (sample?.handleId ?? assist?.handleId) != null && Number.isFinite(effort)
       && row('Hand effort at',jointName(model,sample?.handleId ?? assist.handleId)),
@@ -144,6 +139,70 @@ function sizeSection(model, part, {editable = false, sample, pathEstimate = fals
     balance && h('p',fmt(Math.abs(balance.moment),2)+' N·m ÷ '+fmt(Math.abs(balance.momentArm),4)+' m = '+metric(Math.abs(required),'N'),'rm-equation'),
     Number.isFinite(effort) && h('p','Hand effort is the vertical force required to hold this pose with the configured piston.','rm-note'),
     editable && Number.isFinite(required) && button('Use required force','use-required'));
+}
+
+const capacityStatuses = {
+  ready:'Within rating',
+  overload:'Demand exceeds rating',
+  assisted:'External load assists motion',
+  blocked:'Piston travel is blocked',
+  unknown:'Demand unavailable',
+  invalid:'Invalid piston geometry',
+};
+
+function capacityRows(load) {
+  const assessment = load.commandAssessment;
+  const commanded = {push:'Push / extend',pull:'Pull / retract'}[load.commandMode];
+  const reverse = commanded && load.commandMode !== load.mode;
+  const external = assessment === 'externally-driven';
+  const items = [
+    row('Rated force (+ push)',signed(load.ratedForce)),
+  ];
+  if (commanded) items.push(row('Commanded direction',commanded));
+  if (reverse) {
+    items.push(row('Available drive for command (+ push)',signed(load.commandAvailableForce)));
+    if (external) {
+      items.push(row('Additional external drive required (+ push)',signed(load.commandRequiredForce)));
+    } else if (assessment === 'load-assisted' || assessment === 'neutral') {
+      items.push(row('Additional external drive required (+ push)',signed(0)));
+    }
+  } else {
+    items.push(row('Available drive (+ push)',signed(load.availableForce)),
+      row('Required hold with other drives',signed(load.requiredForce)),
+      row('Directional headroom',signed(load.margin)));
+  }
+  if (Number.isFinite(load.appliedForce)) items.push(row('Applied drive at last step',signed(load.appliedForce)));
+  if (!reverse && Number.isFinite(load.utilization)) items.push(row('Available drive utilization',fmt(100 * load.utilization,1) + '%'));
+  if (load.atStop) items.push(row('Stroke position',{min:'Compressed stop',max:'Extended stop',both:'Locked stroke'}[load.atStop]));
+  const status = h('p',capacityStatus(load),'rm-capacity-status');
+  status.dataset.capacity = external ? 'overload' : load.status ?? 'unknown';
+  items.unshift(status);
+  if (load.reason) items.push(h('p',load.reason,'rm-note'));
+  return items;
+}
+
+function capacityStatus(load) {
+  if (load?.commandAssessment === 'externally-driven') return 'Reverse drive overload · external force required';
+  if (load?.commandAssessment === 'load-assisted') return 'External load assists commanded motion';
+  if (load?.commandAssessment === 'neutral') return 'No external drive required';
+  return capacityStatuses[load?.status] ?? 'Demand unavailable';
+}
+
+function capacitySection(parts, loads, physicsMode) {
+  if (!parts.length) return null;
+  const lead = physicsMode === 'forced'
+    ? h('p','Forced motion prescribes the piston travel. The load estimate shows whether the installed drive can produce that motion.','rm-note')
+    : physicsMode === 'real' ? h('p','Real simulation uses the available piston force. The mechanism can stall or move under load if the rating is insufficient.','rm-note') : null;
+  if (parts.length === 1 && loads?.[parts[0].id]) return section('Piston rating and load',lead,...capacityRows(loads[parts[0].id]));
+  const list = parts.map(part => {
+    const e = h('details',null,'rm-capacity-item');
+    const load = loads?.[part.id];
+    e.open = !!load?.overload || load?.commandAssessment === 'externally-driven';
+    e.append(h('summary',label(part) + ' · ' + capacityStatus(load)),
+      ...(load ? capacityRows(load) : [h('p','No capacity estimate is available for this piston.','rm-note')]));
+    return e;
+  });
+  return section('Piston rating and load',lead,...list);
 }
 
 function forceToggle(type, item, analysis) {
@@ -217,7 +276,7 @@ function forceBreakdown(model, forces, analysis, pick) {
     }
     current.append(loads);
   }
-  const source = forces?.strokeViolation ? 'This preview is outside a piston stroke. Applied inputs are shown without support and member estimates.'
+  const source = forces?.strokeViolation ? 'The displayed geometry exceeds a piston stroke. Applied inputs are shown without support and member estimates.'
     : forces?.indeterminate ? 'Static equilibrium is possible. Redundant members share load through a minimum-norm estimate, so individual forces are not unique.'
     : ({
     dynamic: 'Simulation forces from the most recent time step.',
@@ -238,7 +297,7 @@ function analysisChoice(title, key, value, choices) {
 }
 
 function analysisAngle(title, key, value) {
-  const wrap = field(title,key,value,{min:-360,max:360,step:1});
+  const wrap = field(title,key,value,{min:-360,max:360,step:'any'});
   const input = wrap.lastChild;
   delete input.dataset.field;
   input.dataset.analysis = key;
@@ -257,12 +316,36 @@ function chartState(model, path, analysis) {
   const defaultIndex = poses.reduce((best,pose,index) => Math.abs(pose.angleDeg) < Math.abs(poses[best].angleDeg) ? index : best,0);
   const requested = analysis.sampleIndex == null ? defaultIndex : Number(analysis.sampleIndex);
   const sampleIndex = Number.isInteger(requested) && poses[requested] ? requested : defaultIndex;
-  return {poses,piston,member,pistons,members,choices,metric,sampleIndex,pistonId:piston?.id,memberId:member?.id};
+  const previewIndex = poses[analysis.previewIndex]?.feasible ? analysis.previewIndex : null;
+  return {poses,piston,member,pistons,members,choices,metric,sampleIndex,previewIndex,pistonId:piston?.id,memberId:member?.id};
 }
 
 function sampleText(pose) {
   if (!pose) return 'No sample';
-  return fmt(pose.angleDeg,2) + '° · ' + (pose.feasible ? 'Reachable' : pose.positions ? 'Geometry only' : 'Unsolved');
+  return fmt(pose.angleDeg,2) + '° · ' + (pose.feasible ? 'Reachable' : pose.positions ? 'Unreachable' : 'Unsolved');
+}
+
+function previewText(state) {
+  const selected = state.poses[state.sampleIndex];
+  const displayed = state.poses[state.previewIndex];
+  const angle = displayed ? fmt(displayed.angleDeg,2) + '°' : null;
+  if (selected.feasible) return angle ? 'Drawing shows the reachable pose at ' + angle + '.' : 'Drawing shows the design pose.';
+  const reason = selected.status === 'stroke' ? 'Installed stroke prevents this pose.'
+    : selected.positions ? 'This pose is unreachable from the design pose with the installed linkage.'
+    : 'Linkage geometry could not be solved at this angle.';
+  return reason + (angle ? ' Drawing stays at the last reachable pose (' + angle + ').' : ' Drawing stays at the design pose.');
+}
+
+function chartReadout(state) {
+  const sample = state.poses[state.sampleIndex];
+  const piston = sample?.pistons?.[state.pistonId];
+  if (state.metric === 'length' && Number.isFinite(piston?.length)) return 'Connection length · ' + millimeters(piston.length);
+  if (state.metric === 'force' && Number.isFinite(piston?.force)) return 'Hold demand · ' + signed(piston.force);
+  if (state.metric === 'hand' && sample?.feasible && Number.isFinite(piston?.assistForce)) return 'Vertical hand effort · ' + handEffort(piston.assistForce);
+  if (state.metric === 'member' && sample?.feasible && Number.isFinite(sample.memberForces?.[state.memberId])) {
+    return 'Member axial force · ' + signed(sample.memberForces[state.memberId]);
+  }
+  return 'Selected quantity unavailable at this angle.';
 }
 
 function renderChart(host, state, sampleInput) {
@@ -284,8 +367,10 @@ export function updateAnalysisCursor(host, {model, design = model, path, analysi
   sampleInput.setAttribute('aria-valuetext',text);
   const preview = host.querySelector('[data-action="preview-analysis-pose"]');
   preview.dataset.index = state.sampleIndex;
-  preview.textContent = sample?.feasible ? 'Preview sample' : 'Preview geometry';
-  preview.disabled = !sample?.positions;
+  preview.disabled = !sample?.feasible;
+  host.querySelector('[data-action="clear-analysis-pose"]').disabled = state.previewIndex == null;
+  host.querySelector('[data-analysis-preview-status]').textContent = previewText(state);
+  host.querySelector('[data-analysis-chart-readout]').textContent = chartReadout(state);
   renderChart(chartHost,state,sampleInput);
 }
 
@@ -333,20 +418,19 @@ function pathControls(model,path,analysis) {
 
   const buttons = h('div',null,'rm-sample-actions');
   const sample = state.poses[state.sampleIndex];
-  const preview = button(sample.feasible ? 'Preview sample' : 'Preview geometry','preview-analysis-pose');
+  const preview = button('Preview sample','preview-analysis-pose');
   preview.dataset.index = state.sampleIndex;
-  preview.disabled = !sample.positions;
+  preview.disabled = !sample.feasible;
   const clear = button('Return to design pose','clear-analysis-pose','rm-link');
-  clear.disabled = !analysis.preview;
+  clear.disabled = state.previewIndex == null;
   buttons.append(preview,clear);
   const reachable = state.poses.filter(pose => pose.feasible).length;
-  items.push(chart,slider,buttons);
+  const readout = h('p',chartReadout(state),'rm-analysis-chart-readout');
+  readout.dataset.analysisChartReadout = '';
+  const drawState = h('p',previewText(state),'rm-note rm-analysis-preview-status');
+  drawState.dataset.analysisPreviewStatus = '';
+  items.push(chart,slider,readout,buttons,drawState);
   items.push(row('Reachable pose samples',reachable + ' / ' + state.poses.length));
-  if (!sample.feasible) items.push(h('p',sample.positions
-    ? 'Geometry-only sample. The requested angle cannot be reached from the design pose with the installed linkage and piston strokes.'
-    : 'The linkage geometry could not be solved at this angle.',
-    'rm-note'));
-  if (analysis.preview && sample.feasible) items.push(h('p','The canvas is previewing a sampled pose. The saved mechanism stays in its design pose.','rm-note'));
   return section('Motion path',...items);
 }
 
@@ -422,7 +506,8 @@ function multiSelection(model, selections, editable) {
   for (const selected of objects) list.append(h('li',label(selected)));
   return section(objects.length + ' items selected',list,editable && button('Delete selected items','delete','rm-delete'));
 }
-export function inspectorContent({model,design=model,pick,selections=[],page,simulation,path,forces,analysis={},time=0,playing=false,trace=false}) {
+export function inspectorContent({model,design=model,pick,selections=[],page,simulation,path,forces,pistonLoads=forces?.pistons,
+  physicsMode,analysis={},time=0,playing=false,trace=false}) {
   const item=lookup(model,pick), edit=!simulation;
   const title=page==='properties' && selections.length>1 ? 'Selection' :
     item && page==='properties' ? label(item) : page==='motion'?'Motion settings':page==='results'?'Force results':'Properties';
@@ -430,19 +515,23 @@ export function inspectorContent({model,design=model,pick,selections=[],page,sim
   const jointLabel=id=>{const j=lookup(model,{type:'joint',id});return j?label(j):'—';};
   if(page==='results') {
     const state = chartState(design,path,analysis);
-    const sample = state.poses[state.sampleIndex];
+    const sample = state.poses[state.previewIndex];
     blocks.push(pathControls(design,path,analysis));
     if (state.piston) {
       const part = lookup(model,{type:'element',id:state.piston.id}) ?? state.piston;
       blocks.push(sizeSection(model,part,{
-        sample:analysis.preview ? sample?.pistons?.[part.id] : undefined,
-        pathEstimate:!!analysis.preview,
-        reachable:!analysis.preview || !!sample?.feasible,
+        sample:sample?.pistons?.[part.id],
+        pathEstimate:!!sample,
       }));
+      blocks.push(capacitySection([part],pistonLoads));
     }
     blocks.push(pathSizing(path,state.piston,edit),forceBreakdown(model,forces,analysis,pick));
   } else if(page==='motion') {
     const o=model.options;
+    if (simulation) {
+      const capacity = capacitySection(model.elements.filter(isPiston),pistonLoads,physicsMode);
+      if (capacity) blocks.push(capacity);
+    }
     blocks.push(section('Simulation settings',
       field('Gravity','gravityEnabled',o.gravityEnabled,{type:'checkbox'}),
       field('Gravity (m/s²)','gravity',o.gravity,{min:0}),
@@ -489,7 +578,10 @@ export function inspectorContent({model,design=model,pick,selections=[],page,sim
       if(['joint','element','load'].includes(type)) props.push(
         edit ? f('Show force on drawing','showForce',item.showForce !== false,{type:'checkbox'}) : forceToggle(type,item,analysis));
       blocks.push(section(kindName(item.kind),...props));
-      if(type==='element' && isPiston(item)) blocks.push(sizeSection(model,item,{editable:edit}),button('Inspect travel and peak force','results'));
+      if(type==='element' && isPiston(item)) {
+        if (simulation) blocks.push(capacitySection([item],pistonLoads,physicsMode));
+        blocks.push(sizeSection(model,item,{editable:edit}),button('Inspect travel and peak force','results'));
+      }
       if(type==='joint' && (simulation || forces)) blocks.push(section('Joint forces',...jointForceRows(item,forces?.joints?.[item.id],forces?.status)));
       if(type==='element' && (simulation || forces)) blocks.push(section('Element forces',...elementForceRows(item,forces?.elements?.[item.id],forces?.status)));
       if(edit) blocks.push(button('Delete '+({element:'component',joint:'joint',load:'load',dimension:'dimension',constraint:'constraint'}[type]),'delete','rm-delete'));

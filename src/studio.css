@@ -210,6 +210,12 @@ button.danger { color: #9a453d; }
 .workspace.with-tree { --tree-width: clamp(174px, 18vw, 252px); }
 .speed-control { display: grid; gap: 3px; margin-inline: 5px; color: var(--muted); text-align: center; font-size: 10px; }
 .speed-control select { padding: 4px; font-size: 12px; }
+.physics-modes { display: flex; padding: 2px; gap: 2px; border: 1px solid var(--line); border-radius: 5px; background: #f4f7f5; white-space: nowrap; }
+.physics-modes label { position: relative; padding: 6px 9px; cursor: pointer; color: #45564c; font-size: 12px; border: 1px solid transparent; border-radius: 3px; }
+.physics-modes input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; margin: 0; cursor: pointer; }
+.physics-modes label:has(input:checked) { color: #215e46; background: #fff; border-color: #9db9a7; font-weight: 600; }
+.physics-modes label:has(input:focus-visible) { outline: 2px solid #398c72; outline-offset: 1px; }
+.piston-alert { position: absolute; z-index: 3; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 24px); padding: 7px 12px; border-color: #c77154; color: #862f22; background: #fff5ec; font-size: 12px; font-weight: 600; box-shadow: 0 1px 4px #2221; }
 .studio .visibility-options { max-height: calc(100% - 16px); overflow: auto; }
 .force-layers { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
 .force-layers summary { cursor: pointer; padding-block: 4px; font-weight: 600; }
@@ -552,11 +558,13 @@ kbd { padding: 1px 4px; border: 1px solid #dbe5df; border-radius: 3px; backgroun
 :is(.rm-chart-selection,.rm-chart-marker).installed { fill: #a46242; stroke: #fff; }
 .rm-chart-pose.feasible { fill: #317057; }
 .rm-chart-pose.blocked { fill: #b07637; }
+.rm-chart-drawing { stroke: #317057; stroke-width: 2; }
 .rm-chart-key { display: flex; align-items: center; gap: 5px; }
 .rm-chart-key::before { content: ''; width: 12px; border-top: 2px solid #317057; }
 .rm-chart-key.reference::before { border-color: #536aa3; border-top-style: dashed; }
 .rm-chart-key.installed::before { border-color: #a46242; border-top-style: dashed; }
 .rm-chart-key.blocked::before { width: 5px; height: 5px; border: 0; border-radius: 50%; background: #b07637; }
+.rm-chart-key.drawing::before { width: 2px; height: 9px; border: 0; background: #317057; }
 .rm-path-figure .rm-chart-empty { padding: 11px 10px; }
 
 #inspector .rm-sample-slider {
@@ -576,6 +584,13 @@ kbd { padding: 1px 4px; border: 1px solid #dbe5df; border-radius: 3px; backgroun
   color: #317057;
 }
 .rm-sample-actions { display: flex; flex-wrap: wrap; gap: 0 8px; margin-bottom: 4px; }
+#inspector .rm-analysis-chart-readout { margin-top: 5px; font-size: 11px; color: #344d41; font-variant-numeric: tabular-nums; }
+#inspector .rm-analysis-preview-status { margin-top: 5px; }
+#inspector .rm-capacity-status { display: inline-block; margin: 5px 0; padding: 3px 7px; border-radius: 4px; background: #eef3ef; color: #3e5d4c; font-size: 11px; font-weight: 600; }
+#inspector .rm-capacity-status:is([data-capacity=overload], [data-capacity=invalid]) { background: #fbede5; color: #88351c; }
+#inspector .rm-capacity-status:is([data-capacity=blocked], [data-capacity=unknown]) { background: #fbf5e8; color: #6f572e; }
+.rm-capacity-item { border: 1px solid #e3ebe5; border-radius: 5px; padding: 5px 7px; font-size: 11px; }
+.rm-capacity-item summary { cursor: pointer; }
 .rm-force-groups { margin-top: 8px; }
 .rm-force-groups summary { cursor: pointer; padding: 7px 2px; border-radius: 4px; }
 .rm-force-groups summary:hover { background: #eef5f0; }

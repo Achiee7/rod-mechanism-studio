@@ -61,14 +61,14 @@ function line(points, x, y) {
   return commands.join(' ');
 }
 
-export function pathChart(poses, {metric, pistonId, memberId, sampleIndex}, selectSample) {
+export function pathChart(poses, {metric, pistonId, memberId, sampleIndex, previewIndex}, selectSample) {
   const figure = document.createElement('figure');
   figure.className = 'rm-path-figure';
   const series = plottedSeries(poses, metric, pistonId, memberId).map(set => ({
     ...set, points: poses.map(pose => ({angle: pose.angleDeg, value: set.value(pose)})),
   }));
   const values = series.flatMap(set => set.points.map(point => point.value)).filter(Number.isFinite);
-  if (!values.length) {
+  if (!poses.length) {
     const empty = document.createElement('figcaption');
     empty.className = 'rm-note rm-chart-empty';
     empty.textContent = 'No values are available for this quantity over the sampled path.';
@@ -78,12 +78,12 @@ export function pathChart(poses, {metric, pistonId, memberId, sampleIndex}, sele
 
   const units = metric === 'length' ? 'mm' : 'N';
   const [firstAngle, lastAngle] = coordinateRange(poses.map(pose => pose.angleDeg));
-  const [min, max] = coordinateRange(values, units === 'N');
+  const [min, max] = values.length ? coordinateRange(values, units === 'N') : [0, 1];
   const x = angle => LEFT + (angle - firstAngle) * (RIGHT - LEFT) / (lastAngle - firstAngle);
   const y = value => BOTTOM - (value - min) * (BOTTOM - TOP) / (max - min);
-  const chart = svgNode('svg', {viewBox: '0 0 400 154', role: 'img', 'aria-label': 'Sampled path diagram. Values in ' + units + '. Use the pose sample slider to inspect exact values.'});
+  const chart = svgNode('svg', {viewBox: '0 0 400 154', role: 'img', 'aria-label': 'Path diagram. Values in ' + units + '. Use the sample slider to inspect the sweep. Only reachable samples move the drawing.'});
   const ticks = 4;
-  for (let step = 0; step <= ticks; step++) {
+  for (let step = 0; values.length && step <= ticks; step++) {
     const value = max - (max - min) * step / ticks;
     const pos = y(value);
     chart.append(
@@ -91,11 +91,12 @@ export function pathChart(poses, {metric, pistonId, memberId, sampleIndex}, sele
       svgNode('text', {x: LEFT - 5, y: pos + 3, 'text-anchor': 'end'}, Math.abs(value) >= 100000 ? value.toExponential(1) : format(value, 1)),
     );
   }
+  if (!values.length) chart.append(svgNode('text', {x: (LEFT + RIGHT) / 2, y: 62, 'text-anchor': 'middle'}, 'Selected quantity unavailable for this sweep'));
   if (min < 0 && max > 0) chart.append(svgNode('line', {x1: LEFT, x2: RIGHT, y1: y(0), y2: y(0), class: 'rm-chart-zero'}));
   for (const angle of [firstAngle, (firstAngle + lastAngle) / 2, lastAngle]) {
     chart.append(svgNode('text', {x: x(angle), y: 146, 'text-anchor': 'middle'}, format(angle, 1) + '°'));
   }
-  chart.append(svgNode('text', {x: LEFT - 5, y: BOTTOM + 17, 'text-anchor': 'end'}, units));
+  if (values.length) chart.append(svgNode('text', {x: LEFT - 5, y: BOTTOM + 17, 'text-anchor': 'end'}, units));
   for (const set of [...series].reverse()) {
     chart.append(svgNode('path', {d: line(set.points, x, y), class: 'rm-chart-series ' + set.tone}));
     if (set.points.filter(point => Number.isFinite(point.value)).length === 1) {
@@ -115,6 +116,11 @@ export function pathChart(poses, {metric, pistonId, memberId, sampleIndex}, sele
       const value = set.value(selected);
       if (Number.isFinite(value)) chart.append(svgNode('circle', {cx: markerX, cy: y(value), r: 3.8, class: 'rm-chart-selection ' + set.tone}));
     }
+  }
+  const previewed = previewIndex !== sampleIndex && poses[previewIndex];
+  if (previewed) {
+    const markerX = x(previewed.angleDeg);
+    chart.append(svgNode('path', {d: 'M' + markerX + ' ' + (STATUS-9) + 'v12', class: 'rm-chart-drawing'}));
   }
   figure.append(chart);
   if (selectSample) {
@@ -138,7 +144,13 @@ export function pathChart(poses, {metric, pistonId, memberId, sampleIndex}, sele
   if (poses.some(pose => !pose.feasible)) {
     const key = document.createElement('span');
     key.className = 'rm-chart-key blocked';
-    key.textContent = 'Unavailable pose';
+    key.textContent = 'Unreachable or unsolved';
+    caption.append(key);
+  }
+  if (previewed) {
+    const key = document.createElement('span');
+    key.className = 'rm-chart-key drawing';
+    key.textContent = 'Pose shown in drawing';
     caption.append(key);
   }
   figure.append(caption);

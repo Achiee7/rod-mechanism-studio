@@ -1,3 +1,7 @@
+import { pistonGeometry } from './piston-physics.js';
+
+export { pistonGeometry } from './piston-physics.js';
+
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const PART_TOOLS = new Set(['rod', 'body', 'actuator', 'gas_spring', 'motor']);
 const JOINT_TOOLS = new Set(['joint', 'pin', 'fixed', 'rotation', 'origin']);
@@ -112,22 +116,8 @@ export function marqueeSelection(model, a, b, position, { loads = true } = {}) {
   return result;
 }
 
-export function pistonGeometry(element, centerLength) {
-  const compressed = element.minLength ?? element.length * 0.65;
-  const extended = element.maxLength ?? element.length;
-  const validCompressed = Number.isFinite(compressed) && compressed > 0;
-  const buildLength = validCompressed ? compressed : Math.max(0.001, Number(element.length) || 0.001);
-  const fittingLength = buildLength * 0.1;
-  const barrelLength = buildLength - 2 * fittingLength;
-  const tolerance = Math.max(1e-6, buildLength * 1e-4);
-  let problem;
-  if (!validCompressed || !Number.isFinite(extended) || extended < compressed) problem = 'Invalid compressed or extended length';
-  else if (extended - compressed > barrelLength + tolerance) problem = 'Stroke exceeds the available barrel length';
-  if (centerLength < compressed - tolerance || centerLength > extended + tolerance) {
-    const strokeProblem = centerLength < compressed ? 'Below compressed length' : 'Beyond extended length';
-    problem = problem ? problem + ' · ' + strokeProblem : strokeProblem;
-  }
-  return { fittingLength, barrelLength, barrelRadius: buildLength * 0.027, problem };
+function isPiston(element) {
+  return element?.kind === 'actuator' || element?.kind === 'gas_spring';
 }
 
 function partName(kind) {
@@ -207,6 +197,8 @@ export function createCanvas(host, handlers = {}) {
   const annotationLanes = new Map();
   const torqueRings = new Map();
   const labelBoxes = [];
+  const pistonStatuses = [];
+  const invalidPistons = new Set();
 
   const world = (p) => ({ x: (p.x - view.x) / view.scale, y: (view.y - p.y) / view.scale });
   const screen = (p) => ({ x: view.x + p.x * view.scale, y: view.y - p.y * view.scale });
@@ -272,8 +264,33 @@ export function createCanvas(host, handlers = {}) {
     if (state.showIds) label(g, offset(s, 11, -10), joint.name || joint.id, { class: 'drawing-label' });
   }
 
-  function drawPiston(element, g, parent, start, end, length) {
-    const piston = pistonGeometry(element, length / view.scale);
+  function addPistonStatus(parent, anchor, text, description) {
+    parent.setAttribute('aria-label', parent.getAttribute('aria-label') + '. ' + description);
+    const title = parent.querySelector('title');
+    title.textContent += '. ' + description;
+    pistonStatuses.push({ parent, anchor, text });
+  }
+
+  function drawInvalidPiston(g, parent, length) {
+    parent.classList.add('piston-problem');
+    parent.setAttribute('data-piston-geometry', 'invalid');
+    line(g, { x: 0, y: 0 }, { x: length, y: 0 }, { class: 'piston-mount-reference' });
+    for (const x of [0, length]) {
+      circle(g, { x, y: 0 }, 11, { class: 'drawing-hit' });
+      svg('path', { d: 'M0 -10L10 0 0 10 -10 0Z', transform: 'translate(' + x + ' 0)', class: 'piston-mount-indicator' }, g);
+    }
+  }
+
+  function drawPiston(element, g, parent, start, end, length, centerLength) {
+    const piston = pistonGeometry(element, centerLength);
+    const anchor = offset(midpoint(start, end), 4, 13);
+    if (!piston.valid) {
+      invalidPistons.add(element.id);
+      drawInvalidPiston(g, parent, length);
+      addPistonStatus(parent, anchor, piston.problem, 'Invalid piston geometry. ' + piston.problem);
+      return;
+    }
+    parent.setAttribute('data-piston-geometry', 'physical');
     const fitting = piston.fittingLength * view.scale;
     const front = fitting + piston.barrelLength * view.scale;
     const radius = Math.min(24, Math.max(4, piston.barrelRadius * view.scale));
@@ -288,21 +305,40 @@ export function createCanvas(host, handlers = {}) {
     line(g, { x: fitting, y: -radius }, { x: fitting, y: radius }, { class: 'piston-seal' });
     for (const x of [0, length]) circle(g, { x, y: 0 }, Math.min(11, Math.max(7, radius * 0.7)), { class: 'piston-eye' });
     if (state.showStrokeLimits !== false) {
-      for (const [kind, value] of [['compressed', element.minLength], ['extended', element.maxLength]]) {
+      for (const [kind, value] of [['compressed', piston.minLength], ['extended', piston.maxLength]]) {
         if (!Number.isFinite(value) || value <= 0) continue;
         const x = value * view.scale;
         line(g, { x, y: -radius - 5 }, { x, y: radius + 5 }, { class: 'piston-limit piston-limit-' + kind });
       }
     }
-    if (piston.problem) {
-      parent.classList.add('piston-problem');
-      svg('title', {}, g).textContent = piston.problem;
-      label(parent, offset(midpoint(start, end), 0, 20), piston.problem, { class: 'piston-warning', 'text-anchor': 'middle' });
+    const report = state.pistonLoads instanceof Map ? state.pistonLoads.get(element.id) : state.pistonLoads?.[element.id];
+    if (report && (report.overload ?? (report.status === 'overload' || report.utilization > 1))) {
+      const assessedCommand = report.commandAssessment === 'externally-driven'
+        && Number.isFinite(report.commandRequiredForce) && Number.isFinite(report.commandAvailableForce);
+      const demandForce = assessedCommand ? report.commandRequiredForce : report.requiredForce;
+      const availableForce = assessedCommand ? report.commandAvailableForce : report.availableForce;
+      const utilization = assessedCommand
+        ? (availableForce !== 0 ? Math.abs(demandForce / availableForce) : null)
+        : report.utilization;
+      const required = Number.isFinite(demandForce) ? shownValue(Math.abs(demandForce), 'N') : null;
+      const rating = Number.isFinite(report.ratedForce) ? shownValue(Math.abs(report.ratedForce), 'N') : null;
+      const available = Number.isFinite(availableForce) ? shownValue(Math.abs(availableForce), 'N') : rating;
+      const percentage = Number.isFinite(utilization) ? decimal.format(utilization * 100) + '%' : null;
+      const text = percentage ? 'Overload · ' + percentage : required && available ? 'Overload · ' + required + ' > ' + available : 'Overload';
+      const details = [
+        required && (assessedCommand ? 'Command demand ' : 'Demand ') + required,
+        available && (assessedCommand ? 'Command available ' : 'Available ') + available,
+        rating && 'Rating ' + rating,
+      ].filter(Boolean);
+      const explanation = [text, ...details].join('. ') + (report.reason ? '. ' + report.reason : '.');
+      parent.classList.add('piston-overload');
+      parent.setAttribute('data-piston-overload', 'true');
+      addPistonStatus(parent, anchor, text, explanation);
     }
   }
 
-  function drawPart(element, parent, a, b) {
-    const piston = element.kind === 'actuator' || element.kind === 'gas_spring';
+  function drawPart(element, parent, a, b, centerLength) {
+    const piston = isPiston(element);
     if (piston && element.barrelEnd === 'b') [a, b] = [b, a];
     const length = distance(a, b);
     if (!length && !piston) return;
@@ -316,7 +352,7 @@ export function createCanvas(host, handlers = {}) {
       const middle = { x: length / 2, y: 0 };
       if (length > 34) circle(g, middle, 3, { class: 'body-mass' });
     } else if (piston) {
-      drawPiston(element, g, parent, a, b, length);
+      drawPiston(element, g, parent, a, b, length, centerLength);
     } else if (element.kind === 'motor') {
       stroke(0, length, 'motor-link');
       const center = Math.min(21, length / 2);
@@ -337,7 +373,7 @@ export function createCanvas(host, handlers = {}) {
     const p = screen(a);
     const q = screen(b);
     const g = group('element', element, 'element-' + element.kind);
-    drawPart(element, g, p, q);
+    drawPart(element, g, p, q, distance(a, b));
     if (state.showIds) {
       const name = element.name || element.id;
       const textPoint = offset(midpoint(p, q), 0, -12);
@@ -376,8 +412,7 @@ export function createCanvas(host, handlers = {}) {
     labelBoxes.push({ x: p.x - (centered ? width / 2 : 0), y: p.y, width });
   }
 
-  function annotationLabel(parent, anchor, text, className) {
-    const width = Math.max(20, text.length * 6.2 + 6);
+  function placeAnnotation(anchor, width) {
     const candidates = [
       [7, -8], [-width - 7, -8], [7, 9], [-width - 7, 9],
       [7, -24], [-width - 7, -24], [7, 25], [-width - 7, 25],
@@ -389,7 +424,22 @@ export function createCanvas(host, handlers = {}) {
     const points = candidates.map(([dx, dy]) => offset(anchor, dx, dy));
     const p = points.find((candidate) => inside(candidate) && !overlaps(candidate)) ?? points.find(inside) ?? points[0];
     labelBoxes.push({ ...p, width });
+    return p;
+  }
+
+  function annotationLabel(parent, anchor, text, className) {
+    const p = placeAnnotation(anchor, Math.max(20, text.length * 6.2 + 6));
     return label(parent, p, text, { class: className });
+  }
+
+  function drawPistonStatuses() {
+    for (const { parent, anchor, text } of pistonStatuses) {
+      const width = Math.max(52, text.length * 6.5 + 16);
+      const p = placeAnnotation(anchor, width);
+      const status = svg('g', { class: 'piston-status', 'aria-hidden': 'true' }, parent);
+      svg('rect', { x: p.x, y: p.y - 13, width, height: 18, rx: 4, class: 'piston-status-box' }, status);
+      label(status, offset(p, 8, 0), text, { class: 'piston-status-label' });
+    }
   }
 
   function drawLoad(load) {
@@ -454,10 +504,21 @@ export function createCanvas(host, handlers = {}) {
 
   function drawTrace(trace, className) {
     if (!trace || trace.length < 2) return;
-    const values = trace.map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p);
-    if (values.every((p) => distance(p, values[0]) < 1e-8)) return;
-    const points = values.map(screen).map((p) => p.x + ',' + p.y).join(' ');
-    svg('polyline', { points, class: className, 'pointer-events': 'none' }, geometry);
+    let section = [];
+    function drawSection() {
+      if (section.length < 2 || section.every((p) => distance(p, section[0]) < 1e-8)) return;
+      const points = section.map(screen).map((p) => p.x + ',' + p.y).join(' ');
+      svg('polyline', { points, class: className, 'pointer-events': 'none' }, geometry);
+    }
+    for (const value of trace) {
+      const p = Array.isArray(value) ? { x: value[0], y: value[1] } : value;
+      if (Number.isFinite(p?.x) && Number.isFinite(p?.y)) section.push(p);
+      else {
+        drawSection();
+        section = [];
+      }
+    }
+    drawSection();
   }
 
   function drawTraces() {
@@ -467,22 +528,24 @@ export function createCanvas(host, handlers = {}) {
     }
     if (state.showExcursion === false) return;
     const featured = elements.get(state.selection?.type === 'element' ? state.selection.id : null);
-    const piston = featured?.kind === 'actuator' || featured?.kind === 'gas_spring' ? featured : null;
+    const piston = isPiston(featured) ? featured : null;
     const highlighted = state.excursionJoint ?? (piston?.barrelEnd === 'b' ? piston.a : piston?.b);
     const className = (id) => 'excursion-path' + (String(id) === String(highlighted) ? ' excursion-featured' : '');
     if (state.excursionPoses) {
+      const pistons = [...elements.values()].filter(isPiston);
+      const at = (positions, id) => positions instanceof Map ? positions.get(id) : positions?.[id];
+      const connected = state.excursionPoses.map((pose) => {
+        if (!pose.feasible || !pose.positions) return null;
+        const usable = pistons.every((element) => {
+          const a = at(pose.positions, element.a);
+          const b = at(pose.positions, element.b);
+          return a && b && pistonGeometry(element, distance(a, b)).valid;
+        });
+        return usable ? pose.positions : null;
+      });
       for (const joint of joints.values()) {
         if (joint.kind === 'origin' || joint.kind === 'fixed' || joint.kind === 'rotation') continue;
-        let section = [];
-        for (const pose of state.excursionPoses) {
-          const p = pose.positions instanceof Map ? pose.positions.get(joint.id) : pose.positions?.[joint.id];
-          if (pose.feasible !== false && p) section.push(p);
-          else {
-            drawTrace(section, className(joint.id));
-            section = [];
-          }
-        }
-        drawTrace(section, className(joint.id));
+        drawTrace(connected.map((positions) => at(positions, joint.id)), className(joint.id));
       }
     } else {
       const paths = state.excursionPaths instanceof Map ? state.excursionPaths : Object.entries(state.excursionPaths ?? {});
@@ -493,6 +556,7 @@ export function createCanvas(host, handlers = {}) {
   function drawMomentArm() {
     const arm = state.momentArm;
     if (!arm?.pivot || !arm?.foot) return;
+    if (invalidPistons.has(arm.element ?? state.selection?.id)) return;
     const a = screen(arm.pivot);
     const b = screen(arm.foot);
     const g = svg('g', { class: 'drawing-moment-arm' }, annotations);
@@ -533,6 +597,7 @@ export function createCanvas(host, handlers = {}) {
     for (const force of arrows) {
       const kind = force.kind ?? force.category ?? 'reaction';
       if (kind === 'load') continue;
+      if (invalidPistons.has(force.element)) continue;
       const partType = force.element != null ? 'element' : 'joint';
       const item = force.element != null ? elements.get(force.element) : joints.get(force.joint);
       if (item && (state.forceDisplay?.(partType, item.id) ?? item.showForce) === false) continue;
@@ -633,6 +698,8 @@ export function createCanvas(host, handlers = {}) {
     annotationLanes.clear();
     torqueRings.clear();
     labelBoxes.length = 0;
+    pistonStatuses.length = 0;
+    invalidPistons.clear();
     drawTraces();
     for (const element of elements.values()) drawElement(element);
     if (state.showDimensions !== false) {
@@ -647,6 +714,7 @@ export function createCanvas(host, handlers = {}) {
       const p = point(joint.id);
       if (p) reserveLabel(offset(screen(p), 11, -10), joint.name || joint.id);
     }
+    drawPistonStatuses();
     if (showPointLoads()) for (const load of state.model.loads ?? []) drawLoad(load);
     for (const joint of joints.values()) drawJoint(joint);
     drawForces();
@@ -985,7 +1053,8 @@ export function createCanvas(host, handlers = {}) {
       const moved = state.snap === false || gesture.simulated ? target : { x: Math.round(target.x / precision) * precision, y: Math.round(target.y / precision) * precision };
       gesture.point = moved;
       if (gesture.simulated) handlers.onPoseJoint?.(gesture.joint, moved, { commit: false });
-      hover = { point: moved };
+      const displayed = gesture.simulated ? point(gesture.joint) : moved;
+      hover = displayed ? { point: displayed } : null;
       paint();
       return;
     }

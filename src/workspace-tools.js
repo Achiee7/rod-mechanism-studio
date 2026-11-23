@@ -15,7 +15,13 @@ export class PlaybackClock {
       const elapsed = Math.min(0.1, Math.max(0, (now - this.previous) / 1000));
       this.remainder += elapsed * speed;
       const steps = Math.floor((this.remainder + 1e-12) / physicsStep);
-      for (let i = 0; i < steps; i++) simulation.step(physicsStep);
+      for (let i = 0; i < steps; i++) {
+        const result = simulation.step(physicsStep);
+        if (result?.accepted === false) {
+          this.reset();
+          return result;
+        }
+      }
       this.remainder -= steps * physicsStep;
     }
     this.previous = now;
