@@ -89,6 +89,98 @@ function handEffort(value) {
   return Number.isFinite(value) ? metric(Math.abs(value),'N') + (value < 0 ? ' down' : value > 0 ? ' up' : '') : 'Unavailable';
 }
 
+function magnitude(value) {
+  return Number.isFinite(value) ? metric(Math.abs(value),'N') : 'Unavailable';
+}
+
+function effortRow(up, down, neutral, effort) {
+  const state = Math.abs(effort) < 0.05 ? 'balanced' : effort < 0 ? 'down' : 'up';
+  const line = row(state === 'balanced' ? neutral : state === 'down' ? down : up,magnitude(state === 'balanced' ? 0 : effort));
+  line.classList.add('rm-balance-effort');
+  line.dataset.effort = state;
+  return line;
+}
+
+function axialBalance(part, load) {
+  if (!part || !load) return null;
+  const axial = h('div',null,'rm-axial-balance');
+  const command = load.commandMode === 'pull' ? 'pull' : 'push';
+  const opposite = command === 'push' ? 'pull' : 'push';
+  axial.append(h('h4','Piston axis · ' + label(part)));
+  const {commandDemandWithoutPiston:demand,commandContribution:provided,commandShortfall:shortfall} = load;
+  if (![demand,provided,shortfall].every(Number.isFinite)) {
+    axial.append(h('p',load.reason || 'Axial demand is unavailable at this pose.','rm-note'));
+    return axial;
+  }
+  axial.append(
+    row(demand < -0.05 ? 'Load assists commanded ' + command : 'Demand without this piston',magnitude(demand) + (demand >= 0.05 ? ' ' + command : '')),
+    row(provided < -0.05 ? 'Piston opposes with' : 'Piston supplies',magnitude(provided) + (Math.abs(provided) >= 0.05 ? ' ' + (provided < 0 ? opposite : command) : '')),
+    effortRow('Extra ' + command + ' needed','','No extra ' + command + ' needed',shortfall),
+  );
+  return axial;
+}
+
+function forceBalanceSection({model,part,report,load}) {
+  if (!part && !report) return null;
+  const point = report?.handleId != null && lookup(model,{type:'joint',id:report.handleId});
+  const handle = point ? label(point) : report?.handleName;
+  const result = section(handle ? 'Force balance at ' + handle : 'Force balance');
+  result.classList.add('rm-force-balance');
+  result.dataset.forceBalance = '';
+  const source = ({
+    'measured-rated':'Uses the piston force from the latest simulation step.',
+    'configured-in-forced-pose':'Uses the installed piston force at the forced pose.',
+    'configured-at-pose':'Uses the installed piston force at the displayed pose.',
+    mixed:'Uses measured piston forces where available and installed force estimates elsewhere.',
+  })[report?.forceBasis];
+  if (Number.isFinite(report?.downwardExternalLoad)) {
+    const total=row('Total downward load',magnitude(report.downwardExternalLoad));
+    total.title='Weight of the moving assembly plus downward point loads, before piston forces.';
+    result.append(total);
+  }
+  if (report?.status === 'available') {
+    result.append(
+      row('Load at handle before pistons',handEffort(-report.equivalentExternal)),
+      row('Piston contribution at handle',handEffort(report.pistonContribution)),
+      effortRow('Extra upward lift needed','Downward restraint needed','Balanced at the handle',report.extra),
+    );
+  } else {
+    result.append(h('p',report?.reason || 'Vertical effort at a handle could not be estimated for this pose.','rm-note'));
+  }
+  if (source && part) result.append(h('p',source,'rm-note rm-balance-source'));
+  const axial = axialBalance(part,load);
+  if (axial) result.append(axial);
+  return result;
+}
+
+function balanceSectionFor({model,design=model,pick,page,simulation,path,forces,pistonLoads=forces?.pistons,balancePistonId,analysis={}}) {
+  let part;
+  if (page === 'results') {
+    const piston = chartState(design,path,analysis).piston;
+    part = piston && lookup(model,{type:'element',id:piston.id});
+  } else if ((page === 'motion' || page === 'balance') && simulation) {
+    const parts = model.elements.filter(isPiston);
+    part = parts.find(item=>item.id===balancePistonId) ?? parts.find(item=>pistonLoads?.[item.id]?.overload) ?? parts[0];
+  } else if (page === 'properties' && simulation && pick?.type === 'element') {
+    const item = lookup(model,pick);
+    if (item && isPiston(item)) part = item;
+  } else return null;
+  if (!part && page==='properties') return null;
+  return forceBalanceSection({model,part,report:forces?.handleBalance,load:part && pistonLoads?.[part.id]});
+}
+
+export function updateForceBalance(host, inputs) {
+  const current = host.querySelector('[data-force-balance]');
+  const updated = current && balanceSectionFor(inputs);
+  if (updated) current.replaceWith(updated);
+}
+
+function technicalDetails(title, ...contents) {
+  const details = h('details',null,'rm-technical-details');
+  details.append(h('summary',title),...contents.filter(Boolean));
+  return details;
+}
+
 function pistonState(status) {
   return ({
     singular: 'The piston has too little leverage at this pose to determine a reliable hold force.',
@@ -106,7 +198,7 @@ function strokeInfo(part, length) {
   return 'Within stroke';
 }
 
-function sizeSection(model, part, {editable = false, sample, pathEstimate = false} = {}) {
+function sizeSection(model, part, {editable = false, sample, pathEstimate = false, showHandEffort = true} = {}) {
   const length = sample?.length ?? distance(model,part.a,part.b);
   const fit = strokeInfo(part,length);
   const inStroke = length >= part.minLength-1e-6 && length <= part.maxLength+1e-6;
@@ -131,13 +223,13 @@ function sizeSection(model, part, {editable = false, sample, pathEstimate = fals
         : 'A grounded pivot, a moving lever and an off-axis attachment are needed to determine hold force at this pose.',
       'rm-note'),
     Number.isFinite(required) && row('Required direction',direction(required)),
-    row('Vertical hand effort',handEffort(effort)),
-    (sample?.handleId ?? assist?.handleId) != null && Number.isFinite(effort)
+    showHandEffort && row('Vertical hand effort',handEffort(effort)),
+    showHandEffort && (sample?.handleId ?? assist?.handleId) != null && Number.isFinite(effort)
       && row('Hand effort at',jointName(model,sample?.handleId ?? assist.handleId)),
     balance && row('External moment',metric(balance.moment,'N·m',2)),
     balance && row('Effective arm',millimeters(Math.abs(balance.momentArm))),
     balance && h('p',fmt(Math.abs(balance.moment),2)+' N·m ÷ '+fmt(Math.abs(balance.momentArm),4)+' m = '+metric(Math.abs(required),'N'),'rm-equation'),
-    Number.isFinite(effort) && h('p','Hand effort is the vertical force required to hold this pose with the configured piston.','rm-note'),
+    showHandEffort && Number.isFinite(effort) && h('p','Hand effort is the vertical force required to hold this pose with the configured piston.','rm-note'),
     editable && Number.isFinite(required) && button('Use required force','use-required'));
 }
 
@@ -356,7 +448,8 @@ function renderChart(host, state, sampleInput) {
   }));
 }
 
-export function updateAnalysisCursor(host, {model, design = model, path, analysis = {}}) {
+export function updateAnalysisCursor(host, inputs) {
+  const {model,design=model,path,analysis={}} = inputs;
   const chartHost = host.querySelector('[data-analysis-chart]');
   const sampleInput = host.querySelector('[data-analysis="sampleIndex"]');
   if (!chartHost || !sampleInput) return;
@@ -372,6 +465,7 @@ export function updateAnalysisCursor(host, {model, design = model, path, analysi
   host.querySelector('[data-analysis-preview-status]').textContent = previewText(state);
   host.querySelector('[data-analysis-chart-readout]').textContent = chartReadout(state);
   renderChart(chartHost,state,sampleInput);
+  updateForceBalance(host,inputs);
 }
 
 function pathControls(model,path,analysis) {
@@ -507,30 +601,50 @@ function multiSelection(model, selections, editable) {
   return section(objects.length + ' items selected',list,editable && button('Delete selected items','delete','rm-delete'));
 }
 export function inspectorContent({model,design=model,pick,selections=[],page,simulation,path,forces,pistonLoads=forces?.pistons,
-  physicsMode,analysis={},time=0,playing=false,trace=false}) {
+  balancePistonId,physicsMode,analysis={},time=0,playing=false,trace=false}) {
   const item=lookup(model,pick), edit=!simulation;
   const title=page==='properties' && selections.length>1 ? 'Selection' :
-    item && page==='properties' ? label(item) : page==='motion'?'Motion settings':page==='results'?'Force results':'Properties';
+    item && page==='properties' ? label(item) : page==='motion'?'Motion settings':page==='results'?'Force results':page==='balance'?'Force balance':'Properties';
   const blocks=[];
+  const balance = balanceSectionFor({model,design,pick,page,simulation,path,forces,pistonLoads,balancePistonId,analysis});
   const jointLabel=id=>{const j=lookup(model,{type:'joint',id});return j?label(j):'—';};
   if(page==='results') {
     const state = chartState(design,path,analysis);
     const sample = state.poses[state.previewIndex];
     blocks.push(pathControls(design,path,analysis));
+    if (balance) blocks.push(balance);
     if (state.piston) {
       const part = lookup(model,{type:'element',id:state.piston.id}) ?? state.piston;
-      blocks.push(sizeSection(model,part,{
+      blocks.push(technicalDetails('Piston geometry, sizing and capacity',sizeSection(model,part,{
         sample:sample?.pistons?.[part.id],
         pathEstimate:!!sample,
-      }));
-      blocks.push(capacitySection([part],pistonLoads));
+        showHandEffort:false,
+      }),capacitySection([part],pistonLoads)));
     }
     blocks.push(pathSizing(path,state.piston,edit),forceBreakdown(model,forces,analysis,pick));
+  } else if (page === 'balance') {
+    if (balance) {
+      blocks.push(balance);
+      const parts = model.elements.filter(isPiston);
+      if (parts.length > 1) {
+        const links = parts.map(part => {
+          const control = button(label(part),'pick-piston','rm-link');
+          control.dataset.id = part.id;
+          return control;
+        });
+        blocks.push(technicalDetails('Inspect a piston',...links));
+      }
+      if (parts.length) blocks.push(technicalDetails('Piston ratings and loads',capacitySection(parts,pistonLoads,physicsMode)));
+    } else {
+      blocks.push(section('Force balance',h('p','Add a piston to compare installed drive with the load at the handle.','rm-note')));
+    }
+    blocks.push(technicalDetails('Individual forces',forceBreakdown(model,forces,analysis,pick)));
   } else if(page==='motion') {
     const o=model.options;
     if (simulation) {
       const capacity = capacitySection(model.elements.filter(isPiston),pistonLoads,physicsMode);
-      if (capacity) blocks.push(capacity);
+      if (balance) blocks.push(balance);
+      if (capacity) blocks.push(technicalDetails('Piston ratings and loads',capacity));
     }
     blocks.push(section('Simulation settings',
       field('Gravity','gravityEnabled',o.gravityEnabled,{type:'checkbox'}),
@@ -577,10 +691,13 @@ export function inspectorContent({model,design=model,pick,selections=[],page,sim
       if(type==='constraint') props.push(row('Relation',kindName(item.kind)),row('Between',jointLabel(item.a)+' / '+jointLabel(item.b)));
       if(['joint','element','load'].includes(type)) props.push(
         edit ? f('Show force on drawing','showForce',item.showForce !== false,{type:'checkbox'}) : forceToggle(type,item,analysis));
+      if (balance) blocks.push(balance);
       blocks.push(section(kindName(item.kind),...props));
       if(type==='element' && isPiston(item)) {
-        if (simulation) blocks.push(capacitySection([item],pistonLoads,physicsMode));
-        blocks.push(sizeSection(model,item,{editable:edit}),button('Inspect travel and peak force','results'));
+        const sizing = sizeSection(model,item,{editable:edit,showHandEffort:!simulation});
+        if (simulation) blocks.push(technicalDetails('Piston geometry, sizing and capacity',sizing,capacitySection([item],pistonLoads,physicsMode)));
+        else blocks.push(sizing);
+        blocks.push(button('Inspect travel and peak force','results'));
       }
       if(type==='joint' && (simulation || forces)) blocks.push(section('Joint forces',...jointForceRows(item,forces?.joints?.[item.id],forces?.status)));
       if(type==='element' && (simulation || forces)) blocks.push(section('Element forces',...elementForceRows(item,forces?.elements?.[item.id],forces?.status)));

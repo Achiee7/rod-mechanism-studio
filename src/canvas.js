@@ -131,6 +131,47 @@ function shownValue(value, unit) {
   return (unit === 'm' ? meterDecimal : decimal).format(value) + ' ' + unit;
 }
 
+export function pistonShortfallLabel(report) {
+  if (!(report?.overload ?? (report?.status === 'overload' || report?.utilization > 1))) return null;
+  const commandMode = report.commandMode ?? report.mode;
+  const commandSign = commandMode === 'pull' ? -1 : commandMode === 'push' ? 1 : Math.sign(report.commandRequiredForce ?? report.requiredForce ?? 0);
+  const legacyDemand = report.commandRequiredForce ?? report.requiredForce;
+  const legacyCapacity = report.commandAvailableForce ?? report.availableForce;
+  const legacyShortfall = Number.isFinite(legacyDemand) && Number.isFinite(legacyCapacity)
+    ? legacyDemand * commandSign - Math.abs(legacyCapacity) : null;
+  const shortfall = report.commandShortfall ?? (Number.isFinite(report.margin) ? -report.margin : legacyShortfall);
+  const sign = Math.sign(report.signedCommandShortfall ?? commandSign);
+  if (!Number.isFinite(shortfall) || !sign) return { text: 'Piston overloaded', detail: report.reason ?? 'The amount of extra force is unavailable.' };
+  if (shortfall <= 1e-6) return null;
+
+  const direction = sign > 0 ? 'push' : 'pull';
+  const text = shownValue(shortfall, 'N') + ' more ' + direction;
+  const details = ['Needs ' + text + ' along the piston axis.'];
+  const demand = report.demandWithoutPiston ?? report.requiredForce;
+  if (Number.isFinite(demand)) {
+    details.push(Math.abs(demand) > 1e-6
+      ? 'Axial demand without this piston is ' + shownValue(Math.abs(demand), 'N') + ' of ' + (demand > 0 ? 'push.' : 'pull.')
+      : 'Axial demand without this piston is zero.');
+  }
+  const contribution = report.commandContribution ?? (Number.isFinite(report.availableForce) ? report.availableForce * sign : null);
+  if (Number.isFinite(contribution)) {
+    if (contribution > 1e-6) details.push('The installed piston supplies ' + shownValue(contribution, 'N') + ' toward this motion.');
+    else if (contribution < -1e-6) details.push('The installed piston opposes this motion with ' + shownValue(-contribution, 'N') + '.');
+    else details.push('The installed piston supplies no force along this axis.');
+  }
+  return { text, detail: details.join(' ') };
+}
+
+export function assistArrowLabel({ fx, fy }, handle) {
+  const magnitude = Math.hypot(fx, fy);
+  if (!Number.isFinite(magnitude) || magnitude < 1e-8) return null;
+  const vertical = Math.abs(fy) > magnitude * 1e-6 ? (fy > 0 ? 'up' : 'down') : '';
+  const horizontal = Math.abs(fx) > magnitude * 1e-6 ? (fx > 0 ? 'right' : 'left') : '';
+  const direction = [vertical, horizontal].filter(Boolean).join(' and ');
+  const action = vertical === 'up' && !horizontal ? 'Manual lift' : 'Manual force';
+  return action + ' · ' + shownValue(magnitude, 'N') + ' ' + direction + (handle ? ' at ' + handle : '');
+}
+
 function dimensionPoints(a, b, kind, shift) {
   const m = midpoint(a, b);
   if (kind === 'horizontal') return [{ x: a.x, y: m.y + shift }, { x: b.x, y: m.y + shift }];
@@ -312,28 +353,11 @@ export function createCanvas(host, handlers = {}) {
       }
     }
     const report = state.pistonLoads instanceof Map ? state.pistonLoads.get(element.id) : state.pistonLoads?.[element.id];
-    if (report && (report.overload ?? (report.status === 'overload' || report.utilization > 1))) {
-      const assessedCommand = report.commandAssessment === 'externally-driven'
-        && Number.isFinite(report.commandRequiredForce) && Number.isFinite(report.commandAvailableForce);
-      const demandForce = assessedCommand ? report.commandRequiredForce : report.requiredForce;
-      const availableForce = assessedCommand ? report.commandAvailableForce : report.availableForce;
-      const utilization = assessedCommand
-        ? (availableForce !== 0 ? Math.abs(demandForce / availableForce) : null)
-        : report.utilization;
-      const required = Number.isFinite(demandForce) ? shownValue(Math.abs(demandForce), 'N') : null;
-      const rating = Number.isFinite(report.ratedForce) ? shownValue(Math.abs(report.ratedForce), 'N') : null;
-      const available = Number.isFinite(availableForce) ? shownValue(Math.abs(availableForce), 'N') : rating;
-      const percentage = Number.isFinite(utilization) ? decimal.format(utilization * 100) + '%' : null;
-      const text = percentage ? 'Overload · ' + percentage : required && available ? 'Overload · ' + required + ' > ' + available : 'Overload';
-      const details = [
-        required && (assessedCommand ? 'Command demand ' : 'Demand ') + required,
-        available && (assessedCommand ? 'Command available ' : 'Available ') + available,
-        rating && 'Rating ' + rating,
-      ].filter(Boolean);
-      const explanation = [text, ...details].join('. ') + (report.reason ? '. ' + report.reason : '.');
+    const shortfall = pistonShortfallLabel(report);
+    if (shortfall) {
       parent.classList.add('piston-overload');
       parent.setAttribute('data-piston-overload', 'true');
-      addPistonStatus(parent, anchor, text, explanation);
+      addPistonStatus(parent, anchor, shortfall.text, shortfall.detail);
     }
   }
 
@@ -623,7 +647,9 @@ export function createCanvas(host, handlers = {}) {
       const group = svg('g', { class: 'force-kind-' + kind, 'data-force-kind': kind }, annotations);
       if (lane) line(group, pointOnScreen, a, { class: 'force-leader' });
       arrow(group, a, b, 'result-force');
-      annotationLabel(group, b, (force.label ?? title) + ' ' + shownValue(magnitude, 'N'), 'result-force-label');
+      const handle = force.handleName ?? (force.joint != null ? joints.get(force.joint)?.name || 'joint ' + force.joint : null);
+      const text = kind === 'assist' ? assistArrowLabel(force, handle) : (force.label ?? title) + ' ' + shownValue(magnitude, 'N');
+      annotationLabel(group, b, text, 'result-force-label');
     }
     if (state.showMotorTorques) {
       for (const element of elements.values()) {

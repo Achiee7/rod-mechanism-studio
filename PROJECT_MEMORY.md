@@ -18,6 +18,7 @@ Build a browser studio for analyzing feasible 2D linkage paths, the forces they 
 - Verified 23 regressions including four-bar closure, hatch stroke stops, force balance and playback. The updated hatch sweep (−22° to 0°) needs 291.2 mm of travel and peaks at 324.59 N push.
 - Kept the analysis graph; unreachable samples hold the drawing at its last reachable pose. Both simulation modes enforce installed stroke and barrel geometry.
 - Real physics allows backdriving; Forced motion supports reverse travel and marks overloaded pistons. Verified below-rated, backdriven and forced movement, mounting errors, and hard stops.
+- Force results now shows total downward load, piston contribution and remaining lift at the named pin. Canvas badges show extra axial push or pull; the recreated example needs 149.6 N push or 149.4 N upward at Pin 2.
 
 ## Scope for later
 
