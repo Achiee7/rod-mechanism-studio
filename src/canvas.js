@@ -11,6 +11,18 @@ const PART_NAMES = {
 };
 const MIN_SCALE = 4;
 const MAX_SCALE = 80000;
+const FORCE_TYPES = {
+  gravity: ['showAppliedForces', 'Gravity'],
+  applied: ['showAppliedForces', 'Applied'],
+  piston: ['showPistonForces', 'Piston'],
+  motor: ['showMotorTorques', 'Motor'],
+  member: ['showMemberForces', 'Axial'],
+  stroke: ['showConstraintForces', 'Stroke stop'],
+  constraint: ['showConstraintForces', 'Constraint'],
+  reaction: ['showReactions', 'Reaction'],
+  resultant: ['showResultantForces', 'Resultant'],
+  assist: ['showAssistForces', 'Manual lift'],
+};
 let drawingId = 0;
 
 function svg(tag, attributes = {}, parent) {
@@ -57,6 +69,65 @@ function projectedPoint(p, a, b) {
   if (lengthSquared === 0) return a;
   const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSquared));
   return offset(a, dx * t, dy * t);
+}
+
+function selectionBounds(a, b) {
+  return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) };
+}
+
+export function marqueeSelection(model, a, b, position, { loads = true } = {}) {
+  const { x, y, width, height } = selectionBounds(a, b);
+  const crossing = b.x < a.x;
+  const inside = (p) => p && p.x >= x && p.x <= x + width && p.y >= y && p.y <= y + height;
+  function intersects(start, end) {
+    if (!start || !end) return false;
+    let low = 0;
+    let high = 1;
+    for (const [value, delta, min, max] of [[start.x, end.x - start.x, x, x + width], [start.y, end.y - start.y, y, y + height]]) {
+      if (Math.abs(delta) < 1e-12) {
+        if (value < min || value > max) return false;
+      } else {
+        const t1 = (min - value) / delta;
+        const t2 = (max - value) / delta;
+        low = Math.max(low, Math.min(t1, t2));
+        high = Math.min(high, Math.max(t1, t2));
+        if (low > high) return false;
+      }
+    }
+    return true;
+  }
+
+  const result = [];
+  for (const joint of model.joints ?? []) {
+    if (joint.kind !== 'origin' && inside(position(joint.id))) result.push({ type: 'joint', id: joint.id });
+  }
+  for (const element of model.elements ?? []) {
+    const start = position(element.a);
+    const end = position(element.b);
+    if (crossing ? intersects(start, end) : inside(start) && inside(end)) result.push({ type: 'element', id: element.id });
+  }
+  if (loads) for (const load of model.loads ?? []) {
+    if (inside(position(load.joint))) result.push({ type: 'load', id: load.id });
+  }
+  return result;
+}
+
+export function pistonGeometry(element, centerLength) {
+  const compressed = element.minLength ?? element.length * 0.65;
+  const extended = element.maxLength ?? element.length;
+  const validCompressed = Number.isFinite(compressed) && compressed > 0;
+  const buildLength = validCompressed ? compressed : Math.max(0.001, Number(element.length) || 0.001);
+  const fittingLength = buildLength * 0.1;
+  const barrelLength = buildLength - 2 * fittingLength;
+  const tolerance = Math.max(1e-6, buildLength * 1e-4);
+  let problem;
+  if (!validCompressed || !Number.isFinite(extended) || extended < compressed) problem = 'Invalid compressed or extended length';
+  else if (extended - compressed > barrelLength + tolerance) problem = 'Stroke exceeds the available barrel length';
+  if (centerLength < compressed - tolerance || centerLength > extended + tolerance) {
+    const strokeProblem = centerLength < compressed ? 'Below compressed length' : 'Beyond extended length';
+    problem = problem ? problem + ' · ' + strokeProblem : strokeProblem;
+  }
+  return { fittingLength, barrelLength, barrelRadius: buildLength * 0.027, problem };
 }
 
 function partName(kind) {
@@ -108,7 +179,7 @@ export function createCanvas(host, handlers = {}) {
     height: '100%',
   }, host);
   const description = svg('desc', { id: id + '-description' }, root);
-  description.textContent = 'Use Tab to focus existing geometry and Enter to select it. Use the arrow keys to move the keyboard cursor and Enter to use the active tool. Hold Shift to place an aligned dimension. Use Control-click or Control-Enter to add a second item to a constraint selection.';
+  description.textContent = 'Drag over an empty area left to right to select contained items, or right to left to select crossing items. Hold Shift to add to the selection. Use Tab to focus an item and Enter to select it. Use Control-click or Control-Enter to choose a constraint for two items.';
 
   const defs = svg('defs', {}, root);
   const patterns = ['minor', 'major'].map((name) => {
@@ -118,6 +189,7 @@ export function createCanvas(host, handlers = {}) {
     return { pattern, path, rect };
   });
   const geometry = svg('g', { class: 'drawing-geometry' }, root);
+  const annotations = svg('g', { class: 'drawing-annotations', 'pointer-events': 'none', 'aria-hidden': 'true' }, root);
   const overlay = svg('g', { class: 'drawing-overlay', 'pointer-events': 'none', 'aria-hidden': 'true' }, root);
 
   let state = { model: { joints: [], elements: [], loads: [], dimensions: [], constraints: [] }, tool: 'select' };
@@ -131,31 +203,42 @@ export function createCanvas(host, handlers = {}) {
   let gesture = null;
   let keyboardPoint = null;
   let constraintPair = null;
+  let renderedSelection = new Set();
+  const annotationLanes = new Map();
+  const torqueRings = new Map();
+  const labelBoxes = [];
 
   const world = (p) => ({ x: (p.x - view.x) / view.scale, y: (view.y - p.y) / view.scale });
   const screen = (p) => ({ x: view.x + p.x * view.scale, y: view.y - p.y * view.scale });
   const activeTool = () => state.readOnly && state.tool !== 'pan' ? 'select' : state.tool;
   const gridSize = () => Number.isFinite(state.gridSize) && state.gridSize > 0 ? state.gridSize : 0.1;
+  const selectionKey = ({ type, id }) => type + ':' + id;
+  const selected = (type, id) => renderedSelection.has(selectionKey({ type, id }));
+  const showPointLoads = () => state.showPointLoads ?? state.showLoads !== false;
 
   function point(ref) {
     if (typeof ref === 'object') return ref;
     if (gesture?.joint === ref && gesture.point && !gesture.simulated) return gesture.point;
     const positions = state.positions;
-    return (positions instanceof Map ? positions.get(ref) : positions?.[ref]) ?? joints.get(ref);
+    const p = (positions instanceof Map ? positions.get(ref) : positions?.[ref]) ?? joints.get(ref);
+    if (p && gesture?.movingJoints?.has(ref) && gesture.delta) {
+      return offset(p, gesture.delta.x, gesture.delta.y);
+    }
+    return p;
   }
 
   function group(type, item, extraClass = '') {
-    const selected = state.selection?.type === type && state.selection.id === item.id;
+    const isSelected = selected(type, item.id);
     const paired = constraintPair?.some((selection) => selection.type === type && selection.id === item.id);
     const title = item.name || item.label || (partName(item.kind ?? type) + ' ' + item.id);
     const node = svg('g', {
-      class: ('drawing-' + type + ' ' + extraClass + (selected ? ' selected' : '') + (paired ? ' paired' : '')).trim(),
+      class: ('drawing-' + type + ' ' + extraClass + (isSelected ? ' selected' : '') + (paired ? ' paired' : '')).trim(),
       'data-type': type,
       'data-id': item.id,
       role: 'button',
       tabindex: '0',
       'aria-label': title,
-      'aria-pressed': selected,
+      'aria-pressed': isSelected,
     }, geometry);
     svg('title', {}, node).textContent = title;
     return node;
@@ -167,7 +250,7 @@ export function createCanvas(host, handlers = {}) {
     const s = screen(p);
     const g = group('joint', joint, 'joint-' + joint.kind);
     circle(g, s, 14, { class: 'drawing-hit' });
-    if (state.selection?.type === 'joint' && state.selection.id === joint.id) {
+    if (selected('joint', joint.id)) {
       circle(g, s, 13, { class: 'joint-halo' });
     }
     const local = svg('g', { transform: 'translate(' + s.x + ' ' + s.y + ')' }, g);
@@ -189,9 +272,40 @@ export function createCanvas(host, handlers = {}) {
     if (state.showIds) label(g, offset(s, 11, -10), joint.name || joint.id, { class: 'drawing-label' });
   }
 
+  function drawPiston(element, g, parent, start, end, length) {
+    const piston = pistonGeometry(element, length / view.scale);
+    const fitting = piston.fittingLength * view.scale;
+    const front = fitting + piston.barrelLength * view.scale;
+    const radius = Math.min(24, Math.max(4, piston.barrelRadius * view.scale));
+    const endFitting = Math.max(front, length - fitting);
+    const along = (from, to, className) => line(g, { x: from, y: 0 }, { x: to, y: 0 }, { class: className });
+    along(0, fitting, 'piston-fitting');
+    along(front, endFitting, 'piston-rod');
+    along(Math.min(length, endFitting), length, 'piston-fitting');
+    const body = svg('rect', { x: fitting, y: -radius, width: front - fitting, height: radius * 2, rx: Math.min(radius / 3, 3), class: 'piston-cylinder' }, g);
+    body.setAttribute('data-barrel-length', piston.barrelLength);
+    line(g, { x: front, y: -radius }, { x: front, y: radius }, { class: 'piston-seal' });
+    line(g, { x: fitting, y: -radius }, { x: fitting, y: radius }, { class: 'piston-seal' });
+    for (const x of [0, length]) circle(g, { x, y: 0 }, Math.min(11, Math.max(7, radius * 0.7)), { class: 'piston-eye' });
+    if (state.showStrokeLimits !== false) {
+      for (const [kind, value] of [['compressed', element.minLength], ['extended', element.maxLength]]) {
+        if (!Number.isFinite(value) || value <= 0) continue;
+        const x = value * view.scale;
+        line(g, { x, y: -radius - 5 }, { x, y: radius + 5 }, { class: 'piston-limit piston-limit-' + kind });
+      }
+    }
+    if (piston.problem) {
+      parent.classList.add('piston-problem');
+      svg('title', {}, g).textContent = piston.problem;
+      label(parent, offset(midpoint(start, end), 0, 20), piston.problem, { class: 'piston-warning', 'text-anchor': 'middle' });
+    }
+  }
+
   function drawPart(element, parent, a, b) {
+    const piston = element.kind === 'actuator' || element.kind === 'gas_spring';
+    if (piston && element.barrelEnd === 'b') [a, b] = [b, a];
     const length = distance(a, b);
-    if (!length) return;
+    if (!length && !piston) return;
     const degrees = angle(a, b) * 180 / Math.PI;
     const g = svg('g', { transform: 'translate(' + a.x + ' ' + a.y + ') rotate(' + degrees + ')' }, parent);
     const stroke = (from, to, className) => line(g, { x: from, y: 0 }, { x: to, y: 0 }, { class: className });
@@ -201,12 +315,8 @@ export function createCanvas(host, handlers = {}) {
       stroke(0, length, 'body-fill');
       const middle = { x: length / 2, y: 0 };
       if (length > 34) circle(g, middle, 3, { class: 'body-mass' });
-    } else if (element.kind === 'actuator' || element.kind === 'gas_spring') {
-      stroke(0, length, 'piston-rod');
-      const start = Math.min(10, length * 0.15);
-      const cap = length * 0.63;
-      svg('rect', { x: start, y: -5.5, width: cap - start, height: 11, rx: 2, class: 'piston-cylinder' }, g);
-      line(g, { x: cap - 5, y: -4 }, { x: cap - 5, y: 4 }, { class: 'piston-seal' });
+    } else if (piston) {
+      drawPiston(element, g, parent, a, b, length);
     } else if (element.kind === 'motor') {
       stroke(0, length, 'motor-link');
       const center = Math.min(21, length / 2);
@@ -228,43 +338,92 @@ export function createCanvas(host, handlers = {}) {
     const q = screen(b);
     const g = group('element', element, 'element-' + element.kind);
     drawPart(element, g, p, q);
-    if (state.showIds) label(g, offset(midpoint(p, q), 0, -12), element.name || element.id, { class: 'drawing-label', 'text-anchor': 'middle' });
+    if (state.showIds) {
+      const name = element.name || element.id;
+      const textPoint = offset(midpoint(p, q), 0, -12);
+      reserveLabel(textPoint, name, true);
+      label(g, textPoint, name, { class: 'drawing-label', 'text-anchor': 'middle' });
+    }
   }
 
   function arrow(parent, a, b, className) {
     const heading = angle(a, b);
-    const side = (delta) => offset(b, -9 * Math.cos(heading + delta), -9 * Math.sin(heading + delta));
+    arrowHead(parent, b, heading, className + '-head');
+    line(parent, a, b, { class: className });
+  }
+
+  function arrowHead(parent, b, heading, className) {
+    const side = (delta) => offset(b, -8 * Math.cos(heading + delta), -8 * Math.sin(heading + delta));
     const left = side(0.5);
     const right = side(-0.5);
-    line(parent, a, b, { class: className });
-    svg('polygon', { points: b.x + ',' + b.y + ' ' + left.x + ',' + left.y + ' ' + right.x + ',' + right.y, class: className + '-head' }, parent);
+    svg('polygon', { points: b.x + ',' + b.y + ' ' + left.x + ',' + left.y + ' ' + right.x + ',' + right.y, class: className }, parent);
+  }
+
+  function annotationLane(origin, dx, dy) {
+    // Parallel and opposite arrows share the same lateral channel counter.
+    const bucket = Math.round(Math.atan2(dy, dx) * 12 / Math.PI);
+    const directionClass = ((bucket % 12) + 12) % 12;
+    const key = [Math.round(origin.x / 10), Math.round(origin.y / 10), directionClass].join(',');
+    const index = annotationLanes.get(key) ?? 0;
+    annotationLanes.set(key, index + 1);
+    const lane = index === 0 ? 0 : Math.ceil(index / 2) * (index % 2 ? 1 : -1);
+    const sign = dx < -1e-7 || (Math.abs(dx) < 1e-7 && dy < 0) ? -1 : 1;
+    return lane * 14 * sign;
+  }
+
+  function reserveLabel(p, text, centered = false) {
+    const width = String(text).length * 6.2 + 6;
+    labelBoxes.push({ x: p.x - (centered ? width / 2 : 0), y: p.y, width });
+  }
+
+  function annotationLabel(parent, anchor, text, className) {
+    const width = Math.max(20, text.length * 6.2 + 6);
+    const candidates = [
+      [7, -8], [-width - 7, -8], [7, 9], [-width - 7, 9],
+      [7, -24], [-width - 7, -24], [7, 25], [-width - 7, 25],
+      [7, -40], [-width - 7, -40], [7, 41], [-width - 7, 41],
+      [7, -56], [-width - 7, -56], [7, 57], [-width - 7, 57],
+    ];
+    const inside = ({ x, y }) => x >= 4 && x + width <= size.width - 4 && y >= 16 && y <= size.height - 4;
+    const overlaps = ({ x, y }) => labelBoxes.some((box) => x < box.x + box.width && x + width > box.x && y > box.y - 14 && y - 14 < box.y);
+    const points = candidates.map(([dx, dy]) => offset(anchor, dx, dy));
+    const p = points.find((candidate) => inside(candidate) && !overlaps(candidate)) ?? points.find(inside) ?? points[0];
+    labelBoxes.push({ ...p, width });
+    return label(parent, p, text, { class: className });
   }
 
   function drawLoad(load) {
+    if ((state.forceDisplay?.('load',load.id) ?? load.showForce) === false) return;
     const p = point(load.joint);
     if (!p) return;
     const g = group('load', load);
     if (load.enabled === false) g.classList.add('load-disabled');
     const s = screen(p);
     const magnitude = Math.hypot(load.fx, load.fy);
-    if (magnitude < 1e-9 && (state.selection?.type !== 'load' || state.selection.id !== load.id)) {
-      svg('circle', { cx: s.x + 13, cy: s.y - 13, r: 3, class: 'force-placeholder' }, g);
-      return;
-    }
     const nx = magnitude ? load.fx / magnitude : 0;
     const ny = magnitude ? -load.fy / magnitude : 1;
-    const a = offset(s, -nx * 55, -ny * 55);
-    const b = offset(s, -nx * 7, -ny * 7);
+    const lane = annotationLane(s, nx, ny);
+    const base = offset(s, -ny * lane, nx * lane);
+    if (magnitude < 1e-9 && !selected('load', load.id)) {
+      const marker = offset(base, 13, -13);
+      circle(g, marker, 8, { class: 'drawing-hit' });
+      circle(g, marker, 3, { class: 'force-placeholder' });
+      return;
+    }
+    const a = offset(base, -nx * 55, -ny * 55);
+    const b = offset(base, -nx * 7, -ny * 7);
     line(g, a, b, { class: 'drawing-hit' });
+    if (lane) line(g, s, b, { class: 'force-leader' });
     arrow(g, a, b, 'force-arrow');
-    label(g, offset(a, nx > 0.45 ? -6 : 8, ny > 0.4 ? -5 : 12), shownValue(magnitude, 'N'), { class: 'force-label', 'text-anchor': nx > 0.45 ? 'end' : 'start' });
+    annotationLabel(g, a, shownValue(magnitude, 'N'), 'force-label');
   }
 
   function drawDimension(parent, dim) {
     const a = point(dim.a);
     const b = point(dim.b);
     if (!a || !b) return;
-    const [start, end] = dimensionPoints(a, b, dim.kind, dim.offset ?? 0.12).map(screen);
+    const shift = gesture?.dimension === dim.id && gesture.dimensionOffset != null ? gesture.dimensionOffset : dim.offset;
+    const [start, end] = dimensionPoints(a, b, dim.kind, shift ?? 0.12).map(screen);
     const middle = midpoint(start, end);
     const g = dim.id == null ? svg('g', { class: 'drawing-dimension dimension-preview' }, parent) : group('dimension', dim, dim.driving === false ? 'dimension-reference' : '');
     line(g, screen(a), start, { class: 'dimension-extension' });
@@ -277,6 +436,7 @@ export function createCanvas(host, handlers = {}) {
     const unit = state.dimensionUnits === 'm' ? 'm' : 'mm';
     const text = shownValue(unit === 'mm' ? value * 1000 : value, unit);
     const width = Math.max(43, text.length * 6.4 + 12);
+    if (dim.id != null) labelBoxes.push({ x: middle.x - width / 2, y: middle.y + 8, width });
     svg('rect', { x: middle.x - width / 2, y: middle.y - 9, width, height: 18, rx: 4, class: 'dimension-box' }, g);
     label(g, offset(middle, 0, 0.5), text, { class: 'dimension-label', 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
   }
@@ -292,12 +452,41 @@ export function createCanvas(host, handlers = {}) {
     label(g, p, CONSTRAINT_GLYPHS[constraint.kind] ?? 'C', { class: 'constraint-label', 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
   }
 
+  function drawTrace(trace, className) {
+    if (!trace || trace.length < 2) return;
+    const values = trace.map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p);
+    if (values.every((p) => distance(p, values[0]) < 1e-8)) return;
+    const points = values.map(screen).map((p) => p.x + ',' + p.y).join(' ');
+    svg('polyline', { points, class: className, 'pointer-events': 'none' }, geometry);
+  }
+
   function drawTraces() {
-    const paths = state.traces instanceof Map ? state.traces.values() : Object.values(state.traces ?? {});
-    for (const trace of paths) {
-      if (!trace || trace.length < 2) continue;
-      const points = trace.map((p) => screen(Array.isArray(p) ? { x: p[0], y: p[1] } : p));
-      svg('polyline', { points: points.map((p) => p.x + ',' + p.y).join(' '), class: 'joint-trace', 'pointer-events': 'none' }, geometry);
+    if (state.showTraces !== false) {
+      const paths = state.traces instanceof Map ? state.traces.values() : Object.values(state.traces ?? {});
+      for (const trace of paths) drawTrace(trace, 'joint-trace');
+    }
+    if (state.showExcursion === false) return;
+    const featured = elements.get(state.selection?.type === 'element' ? state.selection.id : null);
+    const piston = featured?.kind === 'actuator' || featured?.kind === 'gas_spring' ? featured : null;
+    const highlighted = state.excursionJoint ?? (piston?.barrelEnd === 'b' ? piston.a : piston?.b);
+    const className = (id) => 'excursion-path' + (String(id) === String(highlighted) ? ' excursion-featured' : '');
+    if (state.excursionPoses) {
+      for (const joint of joints.values()) {
+        if (joint.kind === 'origin' || joint.kind === 'fixed' || joint.kind === 'rotation') continue;
+        let section = [];
+        for (const pose of state.excursionPoses) {
+          const p = pose.positions instanceof Map ? pose.positions.get(joint.id) : pose.positions?.[joint.id];
+          if (pose.feasible !== false && p) section.push(p);
+          else {
+            drawTrace(section, className(joint.id));
+            section = [];
+          }
+        }
+        drawTrace(section, className(joint.id));
+      }
+    } else {
+      const paths = state.excursionPaths instanceof Map ? state.excursionPaths : Object.entries(state.excursionPaths ?? {});
+      for (const [id, trace] of paths) drawTrace(trace, className(id));
     }
   }
 
@@ -306,7 +495,7 @@ export function createCanvas(host, handlers = {}) {
     if (!arm?.pivot || !arm?.foot) return;
     const a = screen(arm.pivot);
     const b = screen(arm.foot);
-    const g = svg('g', { class: 'drawing-moment-arm' }, overlay);
+    const g = svg('g', { class: 'drawing-moment-arm' }, annotations);
     if (arm.linePoint) line(g, screen(arm.linePoint), b, { class: 'moment-extension' });
     line(g, a, b, { class: 'moment-arm' });
     const theta = angle(b, a);
@@ -314,16 +503,69 @@ export function createCanvas(host, handlers = {}) {
     label(g, offset(midpoint(a, b), 7, -5), shownValue(distance(arm.pivot, arm.foot) * 1000, 'mm'), { class: 'moment-label' });
   }
 
+  function drawTorque(force, pivot) {
+    const direction = force.torque > 0 ? -1 : 1;
+    const key = Math.round(pivot.x / 10) + ',' + Math.round(pivot.y / 10);
+    const ring = torqueRings.get(key) ?? 0;
+    torqueRings.set(key, ring + 1);
+    const radius = 22 + 11 * ring;
+    const startAngle = -Math.PI / 4;
+    const endAngle = startAngle + direction * 4.6;
+    const arcPoint = (theta) => offset(pivot, radius * Math.cos(theta), radius * Math.sin(theta));
+    const a = arcPoint(startAngle);
+    const b = arcPoint(endAngle);
+    const group = svg('g', { class: 'force-kind-motor force-couple', 'data-force-kind': 'motor-torque' }, annotations);
+    svg('path', { d: 'M' + a.x + ' ' + a.y + 'A' + radius + ' ' + radius + ' 0 1 ' + Number(direction > 0) + ' ' + b.x + ' ' + b.y, class: 'result-force' }, group);
+    arrowHead(group, b, endAngle + direction * Math.PI / 2, 'result-force-head');
+    annotationLabel(group, offset(pivot, radius, -radius), shownValue(force.torque, 'N·m'), 'result-force-label');
+  }
+
   function drawForces() {
-    for (const force of state.forces ?? []) {
-      const origin = force.point ?? point(force.joint);
+    if (state.showForces === false) return;
+    const arrows = (state.forces?.arrows ?? state.forces ?? []).slice();
+    if (state.showResultantForces && ['balanced', 'dynamic'].includes(state.forces?.status) && !arrows.some((force) => force.kind === 'resultant')) {
+      for (const joint of joints.values()) {
+        const net = state.forces?.joints?.[joint.id]?.net;
+        if (net) arrows.push({ joint: joint.id, fx: net.x, fy: net.y, kind: 'resultant' });
+      }
+    }
+    const hasTorque = new Set();
+    for (const force of arrows) {
+      const kind = force.kind ?? force.category ?? 'reaction';
+      if (kind === 'load') continue;
+      const partType = force.element != null ? 'element' : 'joint';
+      const item = force.element != null ? elements.get(force.element) : joints.get(force.joint);
+      if (item && (state.forceDisplay?.(partType, item.id) ?? item.showForce) === false) continue;
+      const [visibility, title] = FORCE_TYPES[kind] ?? FORCE_TYPES.applied;
+      if (!(state[visibility] ?? state.showLoads !== false)) continue;
+      const origin = force.point ?? point(force.joint) ?? (Number.isFinite(force.x) && Number.isFinite(force.y) ? force : null);
+      if (!origin) continue;
+      const pointOnScreen = screen(origin);
+      if (force.torque) {
+        hasTorque.add(force.element);
+        const torqueOrigin = Number.isFinite(force.x) && Number.isFinite(force.y) ? screen(force) : pointOnScreen;
+        drawTorque(force, torqueOrigin);
+      }
       const magnitude = Math.hypot(force.fx, force.fy);
-      if (!origin || !Number.isFinite(magnitude) || magnitude < 1e-8) continue;
-      const a = screen(origin);
-      const length = Math.min(82, 26 + 11 * Math.log10(magnitude + 1));
-      const b = offset(a, force.fx / magnitude * length, -force.fy / magnitude * length);
-      arrow(overlay, a, b, 'result-force');
-      label(overlay, offset(b, 7, -4), shownValue(magnitude, 'N'), { class: 'result-force-label' });
+      if (!Number.isFinite(magnitude) || magnitude < 1e-8) continue;
+      const dx = force.fx / magnitude;
+      const dy = -force.fy / magnitude;
+      const lane = annotationLane(pointOnScreen, dx, dy);
+      const length = Math.min(82, 22 + 10 * Math.log10(magnitude + 1));
+      const base = offset(pointOnScreen, -dy * lane, dx * lane);
+      const a = offset(base, dx * 8, dy * 8);
+      const b = offset(base, dx * length, dy * length);
+      const group = svg('g', { class: 'force-kind-' + kind, 'data-force-kind': kind }, annotations);
+      if (lane) line(group, pointOnScreen, a, { class: 'force-leader' });
+      arrow(group, a, b, 'result-force');
+      annotationLabel(group, b, (force.label ?? title) + ' ' + shownValue(magnitude, 'N'), 'result-force-label');
+    }
+    if (state.showMotorTorques) {
+      for (const element of elements.values()) {
+        if (element.kind !== 'motor' || !element.torque || (state.forceDisplay?.('element', element.id) ?? element.showForce) === false || hasTorque.has(element.id)) continue;
+        const pivot = point(element.a);
+        if (pivot) drawTorque(element, screen(pivot));
+      }
     }
   }
 
@@ -345,8 +587,13 @@ export function createCanvas(host, handlers = {}) {
 
   function drawPreview() {
     overlay.replaceChildren();
-    if (state.showLoads !== false) drawForces();
-    drawMomentArm();
+    if (gesture?.marquee && gesture.end) {
+      svg('rect', {
+        ...selectionBounds(gesture.start, gesture.end),
+        class: 'selection-box' + (gesture.end.x < gesture.start.x ? ' selection-crossing' : ''),
+      }, overlay);
+      return;
+    }
     if (draft.start != null) {
       const a = point(draft.start);
       if (a) {
@@ -378,9 +625,14 @@ export function createCanvas(host, handlers = {}) {
     const shouldRestore = previous && root.contains(previous);
     const oldType = shouldRestore ? previous.dataset.type : '';
     const oldId = shouldRestore ? previous.dataset.id : '';
+    renderedSelection = new Set((state.selectionItems ?? (state.selection ? [state.selection] : [])).map(selectionKey));
     root.setAttribute('class', 'mechanism-drawing tool-' + activeTool() + (gesture?.pan ? ' is-panning' : '') + (gesture?.joint != null ? ' is-dragging' : ''));
     updateGrid();
     geometry.replaceChildren();
+    annotations.replaceChildren();
+    annotationLanes.clear();
+    torqueRings.clear();
+    labelBoxes.length = 0;
     drawTraces();
     for (const element of elements.values()) drawElement(element);
     if (state.showDimensions !== false) {
@@ -391,8 +643,14 @@ export function createCanvas(host, handlers = {}) {
     if (state.showConstraints !== false) for (const constraint of state.model.constraints ?? []) {
       if (constraint.visible !== false) drawConstraint(constraint);
     }
-    if (state.showLoads !== false) for (const load of state.model.loads ?? []) drawLoad(load);
+    if (state.showIds) for (const joint of joints.values()) {
+      const p = point(joint.id);
+      if (p) reserveLabel(offset(screen(p), 11, -10), joint.name || joint.id);
+    }
+    if (showPointLoads()) for (const load of state.model.loads ?? []) drawLoad(load);
     for (const joint of joints.values()) drawJoint(joint);
+    drawForces();
+    drawMomentArm();
     drawPreview();
     if (shouldRestore) {
       const replacement = Array.from(geometry.children).find((node) => node.dataset.type === oldType && node.dataset.id === oldId);
@@ -626,6 +884,35 @@ export function createCanvas(host, handlers = {}) {
     handlers.onConstrainPair?.(first, selected, anchor);
   }
 
+  function findMoveGroup(item) {
+    const items = state.selectionItems;
+    if (!handlers.onMoveSelection || !items || items.length < 2 || !item || !selected(item.type, item.id)) return null;
+    if (item.type !== 'joint' && item.type !== 'element') return null;
+    const ids = new Set();
+    for (const entry of items) {
+      if (entry.type === 'joint') ids.add(entry.id);
+      if (entry.type === 'element') {
+        const element = elements.get(entry.id);
+        if (element) {
+          ids.add(element.a);
+          ids.add(element.b);
+        }
+      }
+    }
+    return ids.size && ![...ids].some((id) => joints.get(id)?.kind === 'origin') ? { items, ids } : null;
+  }
+
+  function dimensionDragOffset(dim, target) {
+    const a = point(dim.a);
+    const b = point(dim.b);
+    if (!a || !b) return null;
+    const shift = midpoint(a, b);
+    if (dim.kind === 'horizontal') return target.y - shift.y;
+    if (dim.kind === 'vertical') return target.x - shift.x;
+    const heading = angle(a, b);
+    return -(target.x - shift.x) * Math.sin(heading) + (target.y - shift.y) * Math.cos(heading);
+  }
+
   function pointerDown(event) {
     if (gesture || (event.button !== 0 && event.button !== 1)) return;
     event.preventDefault();
@@ -635,15 +922,25 @@ export function createCanvas(host, handlers = {}) {
     const tool = activeTool();
     const pan = event.button === 1 || tool === 'pan';
     const pair = tool === 'select' && !state.readOnly && (event.ctrlKey || event.metaKey);
-    const selected = hit(event.target);
+    const additive = tool === 'select' && event.shiftKey && !pair;
     const cursor = currentHover(p, event.shiftKey, event.pointerType === 'touch' ? 19 : 12);
-    const joint = selected?.type === 'joint' ? joints.get(selected.id) : selected ? null : joints.get(cursor.id);
+    const item = hit(event.target) ?? (cursor.id != null ? { type: 'joint', id: cursor.id } : null);
+    const joint = item?.type === 'joint' ? joints.get(item.id) : null;
+    const mayDrag = !pan && !pair && !additive && tool === 'select';
     const canMove = joint && joint.kind !== 'origin' && (state.readOnly
       ? state.poseable && joint.kind === 'pin'
       : state.canMoveJoint?.(joint.id) !== false);
-    const dragJoint = !pan && !pair && tool === 'select' && canMove ? joint.id : null;
+    const group = mayDrag && !state.readOnly ? findMoveGroup(item) : null;
+    const dragJoint = mayDrag && !group && canMove ? joint.id : null;
     const press = dragJoint == null ? null : point(dragJoint);
-    gesture = { id: event.pointerId, start: p, view, pan, pair, selected, joint: dragJoint, press, simulated: !!state.readOnly };
+    const dimension = mayDrag && !state.readOnly && handlers.onMoveDimension && item?.type === 'dimension' ? item.id : null;
+    const dim = dimension == null ? null : state.model.dimensions?.find((d) => d.id === dimension);
+    const offsetBias = dim ? (dim.offset ?? 0.12) - (dimensionDragOffset(dim, world(p)) ?? 0) : 0;
+    gesture = {
+      id: event.pointerId, start: p, view, pan, pair, selected: item, joint: dragJoint, press, simulated: !!state.readOnly,
+      marquee: !pan && !pair && !item && tool === 'select', additive, moveItems: group?.items, movingJoints: group?.ids,
+      dimension, offsetBias,
+    };
     root.setPointerCapture?.(event.pointerId);
     hover = pan ? null : cursor;
     root.classList.toggle('is-panning', pan);
@@ -659,7 +956,30 @@ export function createCanvas(host, handlers = {}) {
       setView({ ...initial, x: initial.x + p.x - start.x, y: initial.y + p.y - start.y });
       return;
     }
-    if (gesture?.joint != null && distance(p, gesture.start) > 3) {
+    const movedPointer = gesture && distance(p, gesture.start) > 3;
+    if (gesture?.marquee && movedPointer) {
+      gesture.end = p;
+      drawPreview();
+      return;
+    }
+    if (gesture?.movingJoints && (movedPointer || gesture.delta)) {
+      const dx = (p.x - gesture.start.x) / view.scale;
+      const dy = (gesture.start.y - p.y) / view.scale;
+      const step = gridSize();
+      gesture.delta = state.snap === false ? { x: dx, y: dy } : { x: Math.round(dx / step) * step, y: Math.round(dy / step) * step };
+      paint();
+      return;
+    }
+    if (gesture?.dimension != null && (movedPointer || gesture.dimensionOffset != null)) {
+      const dim = state.model.dimensions.find((entry) => entry.id === gesture.dimension);
+      const next = dim && dimensionDragOffset(dim, world(p));
+      if (next != null) {
+        gesture.dimensionOffset = next + gesture.offsetBias;
+        paint();
+      }
+      return;
+    }
+    if (gesture?.joint != null && movedPointer) {
       const target = offset(gesture.press, (p.x - gesture.start.x) / view.scale, (gesture.start.y - p.y) / view.scale);
       const precision = gridSize();
       const moved = state.snap === false || gesture.simulated ? target : { x: Math.round(target.x / precision) * precision, y: Math.round(target.y / precision) * precision };
@@ -684,14 +1004,32 @@ export function createCanvas(host, handlers = {}) {
     gesture = null;
     if (root.hasPointerCapture?.(event.pointerId)) root.releasePointerCapture(event.pointerId);
     if (event.type !== 'pointercancel' && !finished.pan) {
-      if (finished.joint != null && finished.point) {
+      const end = eventPosition(event);
+      if (finished.marquee && distance(finished.start, end) > 3) {
+        const position = (id) => {
+          const p = point(id);
+          return p && screen(p);
+        };
+        const items = marqueeSelection(state.model, finished.start, end, position, { loads: showPointLoads() });
+        constraintPair = null;
+        handlers.onSelectMany?.(items, { additive: finished.additive });
+      } else if (finished.movingJoints && finished.delta && (finished.delta.x || finished.delta.y)) {
+        handlers.onMoveSelection?.(finished.moveItems, finished.delta);
+      } else if (finished.dimension != null && finished.dimensionOffset != null) {
+        handlers.onMoveDimension?.(finished.dimension, finished.dimensionOffset);
+      } else if (finished.joint != null && finished.point) {
         handlers.onSelect?.({ type: 'joint', id: finished.joint });
         const update = finished.simulated ? handlers.onPoseJoint : handlers.onMoveJoint;
         update?.(finished.joint, finished.point, { commit: true });
-      } else if (distance(eventPosition(event), finished.start) < 6) {
-        const cursor = currentHover(eventPosition(event), event.shiftKey, event.pointerType === 'touch' ? 19 : 12);
+      } else if (distance(end, finished.start) < 6) {
+        const cursor = currentHover(end, event.shiftKey, event.pointerType === 'touch' ? 19 : 12);
         if (finished.pair && finished.selected) {
           selectPair(finished.selected, { x: event.clientX, y: event.clientY });
+        } else if (finished.additive && finished.selected) {
+          constraintPair = null;
+          handlers.onSelectMany?.([finished.selected], { additive: true, toggle: true });
+        } else if (finished.additive) {
+          constraintPair = null;
         } else {
           constraintPair = null;
           useTool(finished.selected, cursor);
@@ -709,6 +1047,8 @@ export function createCanvas(host, handlers = {}) {
 
   function keyDown(event) {
     if (event.key === 'Escape') {
+      if (gesture && root.hasPointerCapture?.(gesture.id)) root.releasePointerCapture(gesture.id);
+      gesture = null;
       draft = {};
       hover = null;
       keyboardPoint = null;
@@ -730,6 +1070,11 @@ export function createCanvas(host, handlers = {}) {
     }
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
+      if (event.shiftKey && selected && activeTool() === 'select') {
+        handlers.onSelectMany?.([selected], { additive: true, toggle: true });
+        paint();
+        return;
+      }
       const element = selected?.type === 'element' ? elements.get(selected.id) : null;
       const a = element && point(element.a);
       const b = element && point(element.b);
