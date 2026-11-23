@@ -102,6 +102,7 @@ export function normalizeMechanism(data) {
       stiffness: Math.max(0, numeric(element.stiffness, 0, `${label} stiffness`)),
       damping: Math.max(0, numeric(element.damping, 0, `${label} damping`)),
       autoReturn: element.autoReturn ?? element.auto_return ?? true,
+      barrelEnd: element.barrelEnd === "b" || element.barrel_end === "b" ? "b" : "a",
       showForce: element.showForce ?? element.show_force ?? true,
     };
   });
@@ -113,6 +114,7 @@ export function normalizeMechanism(data) {
     fx: numeric(load.fx ?? load.force?.x, 0, `Load ${load.id} X`),
     fy: flipY * numeric(load.fy ?? load.force?.y, 0, `Load ${load.id} Y`),
     enabled: load.enabled ?? true,
+    showForce: load.showForce ?? load.show_force ?? true,
   }));
   model.dimensions = fields(data.dimensions, "dimensions").map(dimension => {
     const label = `Dimension ${dimension.id}`;
@@ -162,7 +164,7 @@ export function createDemo() {
     ],
     elements: [
       { id: 1, kind: "body", a: 1, b: 2, name: "Hatch body", mass: 28 },
-      { id: 2, kind: "rod", a: 2, b: 4, name: "Hatch mount", mass: 0.5 },
+      { id: 2, kind: "body", a: 2, b: 4, name: "Hatch mount", mass: 0.5 },
       { id: 3, kind: "gas_spring", a: 3, b: 4, name: "Gas spring", force: 420, damping: 18, minLength: Math.hypot(0.75, 0.85) - 0.3 },
     ],
     dimensions: [

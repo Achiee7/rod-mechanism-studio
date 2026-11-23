@@ -30,7 +30,7 @@
 
 .drawing-hit { fill: transparent; stroke: transparent; stroke-width: 19; }
 circle.drawing-hit { stroke-width: 1; }
-.drawing-label, .force-label, .result-force-label, .moment-label {
+.drawing-label, .force-label, .result-force-label, .moment-label, .piston-warning {
   paint-order: stroke;
   stroke: #f7f9f7;
   stroke-width: 4px;
@@ -55,7 +55,7 @@ circle.drawing-hit { stroke-width: 1; }
 .element-gas_spring { --part-ink: #805b96; --cylinder-fill: #e8deef; }
 .element-motor { --part-ink: #a06b35; }
 .drawing-element.selected, .drawing-element:focus-visible, .drawing-element:hover { --part-ink: #168569; }
-.rod-stroke, .body-edge, .body-fill, .piston-rod, .piston-seal, .motor-link {
+.rod-stroke, .body-edge, .body-fill, .piston-rod, .piston-fitting, .piston-seal, .motor-link {
   stroke: var(--part-ink);
   stroke-linecap: round;
   pointer-events: none;
@@ -64,9 +64,15 @@ circle.drawing-hit { stroke-width: 1; }
 .body-edge { stroke-width: 8; }
 .body-fill { stroke: #d4e3d9; stroke-width: 4.8; }
 .body-mass { fill: var(--part-ink); stroke: #f7f9f7; stroke-width: 1; pointer-events: none; }
-.piston-rod { stroke-width: 3; }
-.piston-cylinder, .motor-case { fill: var(--cylinder-fill, #fff8e7); stroke: var(--part-ink); stroke-width: 1.9; pointer-events: none; }
-.piston-seal { stroke-width: 1; opacity: .6; }
+.piston-rod { stroke-width: 2.65; }
+.piston-fitting { stroke-width: 4; }
+.piston-cylinder, .piston-eye, .motor-case { fill: var(--cylinder-fill, #fff8e7); stroke: var(--part-ink); stroke-width: 1.9; }
+.piston-eye, .motor-case { pointer-events: none; }
+.piston-seal { stroke-width: 1.45; opacity: .85; }
+.piston-limit { stroke: var(--part-ink); stroke-width: 1; opacity: .72; stroke-dasharray: 2 2; pointer-events: none; }
+.piston-limit-extended { stroke-dasharray: 4 2; }
+.drawing-element.piston-problem .piston-cylinder { stroke: #ac494a; stroke-dasharray: 4 2; }
+.piston-warning { fill: #9b3338; font-weight: 650; }
 .motor-link { stroke-width: 2.15; stroke-dasharray: 5 4; }
 .motor-arrow { fill: none; stroke: var(--part-ink); stroke-width: 1.1; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 .drawing-element.selected .rod-stroke { stroke-width: 4.8; }
@@ -75,12 +81,25 @@ circle.drawing-hit { stroke-width: 1; }
 
 .force-arrow { stroke: #c8743e; stroke-width: 1.8; }
 .force-arrow-head, .force-label { fill: #a95b30; }
+.drawing-load { --force-ink: #a95b30; }
 .force-placeholder { fill: #f7f9f7; stroke: #b66d49; stroke-width: 1.25; }
 .load-disabled { opacity: .5; }
 .drawing-load.selected .force-arrow { stroke: #a64d1b; stroke-width: 2.65; }
 .drawing-load.selected .force-arrow-head, .drawing-load.selected .force-label { fill: #a64d1b; }
-.result-force { stroke: #416cb7; stroke-width: 1.9; }
-.result-force-head, .result-force-label { fill: #365eab; }
+.force-leader { stroke: var(--force-ink, #365eab); stroke-width: .9; stroke-dasharray: 2 2; opacity: .7; }
+.force-kind-gravity, .force-kind-applied { --force-ink: #946d1d; }
+.force-kind-member { --force-ink: #26734b; }
+.force-kind-piston { --force-ink: #75518e; }
+.force-kind-motor { --force-ink: #934674; }
+.force-kind-stroke, .force-kind-constraint { --force-ink: #177d73; }
+.force-kind-reaction { --force-ink: #365eab; }
+.force-kind-resultant { --force-ink: #4c596b; }
+.force-kind-assist { --force-ink: #11758a; }
+.result-force { fill: none; stroke: var(--force-ink, #365eab); stroke-width: 1.75; }
+.result-force-head, .result-force-label { fill: var(--force-ink, #365eab); }
+.force-kind-stroke .result-force, .force-kind-constraint .result-force { stroke-dasharray: 4 2; }
+.force-kind-resultant .result-force { stroke-width: 2.4; }
+.force-kind-assist .result-force { stroke-dasharray: 6 3; }
 
 .dimension-line, .dimension-extension { stroke: #899bca; stroke-width: 1; pointer-events: none; }
 .dimension-extension { opacity: .55; }
@@ -98,6 +117,10 @@ circle.drawing-hit { stroke-width: 1; }
 .snap-cross { stroke: #168569; stroke-width: 1; }
 .snap-segment { fill: #fff; stroke: #168569; stroke-width: 1; }
 .joint-trace { fill: none; stroke: #89aba1; stroke-width: 1.15; stroke-dasharray: 3 3; opacity: .82; }
+.excursion-path { fill: none; stroke: #567ca5; stroke-width: 1.4; stroke-dasharray: 5 4; opacity: .64; }
+.excursion-featured { stroke-width: 2.25; stroke: #415997; opacity: .95; }
+.selection-box { fill: #3973c815; stroke: #3973c8; stroke-width: 1; }
+.selection-crossing { fill: #27926b15; stroke: #27926b; stroke-dasharray: 5 3; }
 .moment-arm, .moment-extension, .moment-corner { fill: none; stroke: #7a5d9b; stroke-width: 1.35; }
 .moment-arm, .moment-extension { stroke-dasharray: 4 3; }
 .moment-label { fill: #664983; }

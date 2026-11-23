@@ -6,18 +6,22 @@ Draw a planar linkage and estimate the gas spring or actuator force needed to ho
 
 1. In **Model**, pick a component in the left tree or drawing to edit its properties. Use the ribbon to add joints, rods, weighted bodies, motors, pistons and point loads. Selecting a rod or body partway along its length inserts an attachment when placing a part or load.
 2. Choose **Dimension**, pick a member or two points, then place its dimension. Hold **Shift** for the aligned length. Use the constraint tools or Ctrl-click two joints or two members to see their available constraints.
-3. Select a piston to inspect its required hold force, moment arm and remaining hand effort. **Force results** shows the estimated peak force, raw connection travel and stroke-limited travel. **Use required force** or **Use peak path force** sets the component’s rated force and push/pull direction.
-4. Open **Simulation** for a separate copy of the model. Drag a free pin while paused, or use **Run**, **Step**, **Trace paths** and **Reset pose**. Returning to Model restores the design geometry.
+3. Drag a box from left to right to select enclosed components, joints and loads. Drag right to left to include crossed components. Shift adds to the selection. Move a group or delete it as one undoable edit.
+4. In **Simulation**, choose 0.1× to 4× speed, drag a free pin while paused, or run, step and trace the mechanism. Use the eye menu to show applied forces, member forces, piston thrust, support reactions, stroke-stop forces, joint resultants and manual lift. A single step advances 1/60 s at every playback speed.
+5. Open **Analysis**, select a grounded drive member, and choose an angle range. Scrub the chart to preview poses and inspect signed forces, connection lengths and hand effort. **Export sweep** downloads the sampled positions and forces. Widen the angle range to see where the installed piston runs out of stroke.
+6. Select a piston in **Model** to set its compressed/extended lengths and force or invert its barrel mounting. The barrel keeps its length as the rod slides. The sizing panel checks whether the requested travel fits the modeled single-stage barrel. Stroke limits and a single-direction peak rating can be applied when the sweep supports them.
 
 ## Calculations
 
 Positions are displayed in millimetres, loads in newtons, masses in kilograms and moments in newton-metres. Static sizing balances external moments about a grounded pivot against force along the piston axis. Positive axial force means push, negative means pull. The example gives a 324.59 N push to hold its initial pose. With the configured 420 N spring, holding the hatch requires about 41.96 N downward at the tip.
 
-The path estimate samples a single-pivot sweep from −80° to +80° around the design pose. Raw connection travel includes positions beyond the piston’s limits. Reported force ranges use the admissible samples. Complex multi-link mechanisms can follow a different path. For those, inspect individual poses in Simulation. Dynamic motion uses an iterative planar solver with gravity, actuator and motor loads, rigid-link constraints and piston stroke stops.
+For a one-degree-of-freedom linkage, the path solver follows the assembly from its design pose, enforces rigid lengths, and checks piston stroke as the drive angle changes. The hatch example starts with a −22° to 0° sweep. Its 73 reachable samples require approximately 291.2 mm of travel. General projects start at ±80°. A geometry-only preview can show where different piston mounts or stroke limits would be needed. Singular or underdefined paths are identified in the panel.
+
+Hold-force sizing uses virtual work to estimate the force required if one piston supplies the holding effort. The manual lift estimate includes all configured pistons. A change of required force direction, an unavailable pose, or a stroke that cannot fit the barrel is reported beside the sizing results. Force extrema are sampled values. The calculated forces at a paused pose are based on static equilibrium; after a simulation step, the display uses dynamic forces. Redundant member load sharing is identified as an estimate.
 
 ## Projects and development
 
-Edits save in the current browser. Use **Main menu → Export project** for a portable JSON copy. **Open project** accepts both browser projects and workspace JSON from the original Windows Rod Mechanism Calculator. **New project** starts a blank sketch. Undo can restore the previous project during the same session.
+Edits save in the current browser. **Save project** also sets a design checkpoint accessible through **Restore saved design**. Use **Main menu → Export project** for a portable JSON copy. **Open project** accepts browser projects and workspace JSON from the Windows calculator. Older hatch examples may contain a second freely hinged rod at the spring mount. If that mount is a rigid bracket, select the mount and change its member type to **Weighted body** or open the updated example.
 
 The app uses native JavaScript modules and static files. For local development, serve this directory with `python -m http.server 8000 --bind 127.0.0.1` and open `http://127.0.0.1:8000/`. Run the regression suite with `npm test` using Node.js 22 or newer.
 

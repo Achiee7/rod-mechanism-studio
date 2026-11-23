@@ -121,7 +121,7 @@ export function setupStudio() {
   function setMode(mode) {
     if (studio.dataset.modeCurrent === mode) return;
     studio.dataset.modeCurrent = mode;
-    const name = mode === 'model' ? 'Model tools' : 'Simulation tools';
+    const name = {model:'Model tools', simulation:'Simulation tools', analysis:'Analysis tools'}[mode];
     ribbon.setAttribute('aria-label', name);
     ribbonReveal.querySelector('span').textContent = name;
     studio.querySelectorAll('[data-mode]').forEach(button => {
@@ -129,6 +129,9 @@ export function setupStudio() {
     });
     studio.querySelectorAll('[data-show-mode]').forEach(element => {
       element.hidden = element.dataset.showMode !== mode;
+    });
+    studio.querySelectorAll('[data-hide-mode]').forEach(element => {
+      element.hidden = element.dataset.hideMode === mode;
     });
     ribbon.querySelector('.ribbon-scroll').scrollLeft = 0;
   }
