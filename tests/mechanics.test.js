@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  analyzePath, assistForce, balanceForce, createDemo, distance, effectiveForce,
+  analyzeLegacyPath, analyzePath, assistForce, balanceForce, createDemo, currentForces, distance, effectiveForce, pathDrivers,
   normalizeMechanism, Simulation, solveSketch, splitElement,
 } from "../src/mechanics.js";
 
@@ -19,14 +19,14 @@ test("hatch sizing and the pivot sweep match the desktop calculator", () => {
   close(balance.momentArm, 0.725578395339);
   assert.equal(balance.mode, "push");
   close(assistForce(hatch, 3).handForce, -41.957182449819);
-  const path = analyzePath(hatch);
+  const path = analyzeLegacyPath(hatch);
   close(path.forceRanges[3][0], 310.043821207021);
   close(path.forceRanges[3][1], 324.587358875402);
   close(path.lengthRanges[3][1] - path.lengthRanges[3][0], 0.3);
   close(path.requiredLengthRanges[3][0], 0.327559573798);
   close(path.requiredLengthRanges[3][1], 1.835147344006);
   hatch.elements[2].force = 900;
-  const changed = analyzePath(hatch);
+  const changed = analyzeLegacyPath(hatch);
   assert.deepEqual(changed.forceRanges, path.forceRanges);
   assert.deepEqual(changed.requiredLengthRanges, path.requiredLengthRanges);
   assert.notDeepEqual(changed.assistForceRanges, path.assistForceRanges);
@@ -64,6 +64,8 @@ test("legacy JSON preserves the direction of loads, torque and the visible place
   assert.equal(model.constraints[0].id, 7);
   assert.equal(model.options.gravityEnabled, false);
   assert.equal(model.options.iterations, 32);
+  model.elements[0].barrelEnd = "b";
+  model.loads[0].showForce = false;
   assert.deepEqual(normalizeMechanism(model), model);
 });
 
@@ -187,4 +189,143 @@ test("gas spring damping can oppose motion without reversing force direction", (
   model.elements[0].forceMode = "pull";
   moving.vx = -1;
   assert.equal(effectiveForce(model, 1), 0);
+});
+
+test("the constrained hatch sweep distinguishes installed travel from the requested geometry and sizing", () => {
+  const model = createDemo();
+  const result = analyzePath(model);
+  const spring = model.elements[2];
+  assert.equal(result.status, "partial");
+  assert.ok(result.poses.some(pose => pose.feasible));
+  assert.ok(result.poses.some(pose => !pose.feasible && pose.status === "stroke" && pose.pistons[3].force != null));
+  close(result.forceRanges[3][1], 324.587358875402);
+  assert.ok(result.recommendations[3].stroke > spring.maxLength - spring.minLength);
+  assert.ok(result.requiredForceRanges[3][1] > result.forceRanges[3][1]);
+  assert.equal(result.recommendations[3].mode, "both");
+  assert.equal(result.recommendations[3].status, "partial");
+  const pose = result.poses.find(pose => pose.angleDeg === 0);
+  assert.equal(pose.pistons[3].handleId, 2);
+  close(pose.pistons[3].assistForce, -41.957182449819);
+  spring.force *= 2;
+  assert.deepEqual(analyzePath(model).requiredForceRanges, result.requiredForceRanges);
+});
+
+test("the hatch cycles through both piston stops while its rigid body remains intact", () => {
+  const simulation = new Simulation(createDemo());
+  const modes = new Set();
+  let transitions = 0;
+  let previous = simulation.model.elements[2].forceMode;
+  for (let index = 0; index < 240; index++) {
+    const { maxConstraintError } = simulation.step(1 / 60);
+    assert.ok(maxConstraintError < 1.1e-8, `maximum constraint error was ${maxConstraintError} m`);
+    const mode = simulation.model.elements[2].forceMode;
+    modes.add(mode);
+    if (mode !== previous) transitions++;
+    previous = mode;
+  }
+  assert.deepEqual(modes, new Set(["push", "pull"]));
+  assert.ok(transitions >= 4);
+  assert.equal(currentForces(simulation.model, { dynamic: true }).status, "dynamic");
+});
+
+test("the four-bar stays on its assembly branch and reports geometric closure limits", () => {
+  const model = normalizeMechanism({
+    joints: [point(1, 0, 0, "rotation"), point(2, 0.5, 0.866), point(3, 1.55, 1.2), point(4, 2, 0, "fixed")],
+    elements: [
+      { id: 1, a: 1, b: 2, kind: "rod" }, { id: 2, a: 2, b: 3, kind: "rod" },
+      { id: 3, a: 3, b: 4, kind: "rod" }, { id: 4, a: 4, b: 2, kind: "actuator", minLength: 0.1, maxLength: 4 },
+    ],
+  });
+  assert.deepEqual(pathDrivers(model).map(driver => driver.id), [1, 3]);
+  const path = analyzePath(model, { driverId: 1, minAngle: -30, maxAngle: 50 });
+  assert.equal(path.status, "partial");
+  assert.ok(path.poses.some(pose => pose.status === "geometry" && pose.positions === null));
+  for (const pose of path.poses.filter(item => item.feasible)) {
+    const pts = pose.positions;
+    assert.deepEqual(pts[1], { x: 0, y: 0 });
+    assert.deepEqual(pts[4], { x: 2, y: 0 });
+    for (const { a, b, length } of model.elements.slice(0, 3)) {
+      close(Math.hypot(pts[a].x - pts[b].x, pts[a].y - pts[b].y), length, 1e-6);
+    }
+  }
+  assert.equal(balanceForce(model, 4).lineOfAction, false);
+});
+
+test("underdefined mechanisms do not return an invented sizing path", () => {
+  const model = createDemo();
+  model.elements[1].kind = "rod";
+  const result = analyzePath(model);
+  assert.equal(result.status, "unavailable");
+  assert.match(result.message, /2 free motions/);
+  assert.equal(balanceForce(model, 3), null);
+  assert.ok(analyzeLegacyPath(model).forceRanges[3]);
+});
+
+test("static force diagrams distinguish applied, member and support forces", () => {
+  const model = normalizeMechanism({
+    joints: [point(1, 0, 0, "fixed"), point(2, 0, 1)],
+    elements: [
+      { id: 1, a: 1, b: 2, kind: "rod" },
+      { id: 2, a: 1, b: 2, kind: "actuator", minLength: 0.5, maxLength: 1.5, force: 10 },
+    ],
+    loads: [{ id: 1, joint: 2, fx: 0, fy: -100 }],
+    options: { gravityEnabled: false },
+  });
+  const result = currentForces(model);
+  assert.equal(result.status, "balanced");
+  close(result.joints[1].support.y, 100);
+  close(result.joints[2].applied.y, -90);
+  close(result.joints[2].member.y, 90);
+  close(result.joints[2].net.y, 0);
+  close(result.elements[1].axialForce, 90);
+  assert.ok(result.arrows.some(arrow => arrow.kind === "load" && arrow.fy === -100));
+  assert.ok(result.arrows.some(arrow => arrow.kind === "piston" && arrow.fy === 10));
+  model.loads[0].fx = 20;
+  const unbalanced = currentForces(model);
+  assert.equal(unbalanced.status, "unbalanced");
+  assert.equal(unbalanced.joints[1].support, null);
+  close(unbalanced.balanceResidual, 20);
+  model.elements[1].minLength = 1.2;
+  assert.equal(currentForces(model).strokeViolation, true);
+});
+
+test("manual hand demand counts all installed pistons without changing single-piston sizing", () => {
+  const model = createDemo();
+  const original = assistForce(model, 3);
+  model.elements.push({ ...model.elements[2], id: 4, force: 50 });
+  const both = assistForce(model, 3);
+  close(both.requiredForce, original.requiredForce);
+  assert.ok(both.handForce < original.handForce);
+  const pose = analyzePath(model, { minAngle: 0, maxAngle: 0, samples: 1 }).poses[0];
+  close(pose.pistons[3].assistForce, both.handForce);
+});
+
+test("redundant internal force distributions are flagged as estimates", () => {
+  const model = normalizeMechanism({
+    joints: [point(1, 0, 0, "fixed"), point(2, 0, 1)],
+    elements: [{ id: 1, a: 1, b: 2, kind: "rod" }, { id: 2, a: 1, b: 2, kind: "rod" }],
+    loads: [{ id: 1, joint: 2, fx: 0, fy: -100 }],
+    options: { gravityEnabled: false },
+  });
+  const report = currentForces(model);
+  assert.equal(report.status, "balanced");
+  assert.equal(report.indeterminate, true);
+  assert.equal(report.elements[1].estimated, true);
+  close(report.elements[1].axialForce + report.elements[2].axialForce, 100);
+  const hatch = currentForces(createDemo());
+  assert.equal(hatch.elements[2].estimated, true);
+  assert.ok(hatch.arrows.some(arrow => arrow.constraint && arrow.estimated));
+});
+
+test("ambiguous drive selection and independent links do not invent a shared path", () => {
+  const model = createDemo();
+  model.joints.push(point(5, 4, 0, "fixed"), point(6, 5, 0));
+  model.elements.push({ id: 4, a: 5, b: 6, kind: "rod", length: 1 });
+  assert.equal(analyzePath(model).status, "unavailable");
+  const chosen = analyzePath(model, { driverId: 1, minAngle: -22, maxAngle: 0 });
+  assert.equal(chosen.status, "ok");
+  for (const pose of chosen.poses) assert.deepEqual(pose.positions[6], { x: 5, y: 0 });
+  model.elements.push({ id: 5, a: 2, b: 6, kind: "actuator", minLength: 1, maxLength: 5, length: 1 });
+  assert.match(analyzePath(model, { driverId: 1 }).message, /two independently moving linkages/);
+  assert.equal(balanceForce(model, 3), null);
 });
