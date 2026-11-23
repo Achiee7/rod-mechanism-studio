@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Sketch, simulate, and size planar rod mechanisms in your browser.">
+  <meta name="theme-color" content="#28664f">
+  <title>Rod Mechanism Studio</title>
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <link rel="stylesheet" href="./src/studio.css">
+  <link rel="stylesheet" href="./src/canvas.css">
+  <script type="module" src="./src/main.js"></script>
+</head>
+<body>
+<main class="studio" data-mode-current="model">
+  <header class="topbar">
+    <div class="brand" aria-label="Rod Mechanism Studio">
+      <span class="brandmark" data-icon="mechanism" aria-hidden="true"></span>
+      <strong>rod mechanism<span> studio</span></strong>
+    </div>
+    <div class="project-heading">
+      <input id="project-name" aria-label="Project name" value="Untitled mechanism" maxlength="100" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="header-actions">
+      <span id="save-state" class="save-state" role="status">Saved in this browser</span>
+      <button type="button" class="icon-button main-menu-button" data-shell="menu" data-icon="menu" aria-label="Main menu" aria-expanded="false" aria-controls="main-menu" title="Main menu"></button>
+    </div>
+    <nav id="main-menu" class="main-menu" aria-label="Project menu" hidden>
+      <button type="button" data-action="new" data-icon="new">New project</button>
+      <button type="button" data-action="open" data-icon="open">Open project</button>
+      <button type="button" data-action="export" data-icon="export">Export project</button>
+      <button type="button" data-action="example" data-icon="mechanism">Load example</button>
+      <button type="button" data-action="help" data-icon="help">Help &amp; shortcuts</button>
+    </nav>
+    <input id="project-file" type="file" accept=".json,application/json" hidden>
+  </header>
+
+  <div class="subbar">
+    <nav class="mode-tabs" aria-label="Workspace mode">
+      <button type="button" class="tab" data-mode="model" aria-pressed="true">Model</button>
+      <button type="button" class="tab" data-mode="simulation" aria-pressed="false" title="Open simulation (F5)">Simulation</button>
+    </nav>
+    <div class="sub-actions" aria-label="Project actions">
+      <button type="button" class="icon-button" data-action="undo" data-icon="undo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled></button>
+      <button type="button" class="icon-button" data-action="redo" data-icon="redo" title="Redo (Ctrl+Y)" aria-label="Redo" disabled></button>
+      <button type="button" class="icon-button" data-action="save" data-icon="save" title="Save project (Ctrl+S)" aria-label="Save project"></button>
+    </div>
+  </div>
+
+  <section id="command-ribbon" class="command-ribbon" aria-label="Model tools">
+    <button type="button" id="ribbon-reveal" class="ribbon-reveal" data-shell="ribbon" aria-expanded="false" aria-controls="ribbon-body" hidden><span>Model tools</span><i data-icon="down"></i></button>
+    <div id="ribbon-body" class="ribbon-body">
+      <div class="ribbon-scroll" role="toolbar" aria-label="Mechanism commands">
+        <div class="ribbon-group compact" role="group" aria-label="View">
+          <div class="ribbon-items">
+            <button type="button" class="ribbon-tool small" data-tool="select" data-icon="select" aria-pressed="true" aria-label="Select" title="Select and drag components (V)"></button>
+            <button type="button" class="ribbon-tool small" data-tool="pan" data-icon="pan" aria-pressed="false" aria-label="Pan" title="Drag to pan the view (H)"></button>
+            <button type="button" class="ribbon-tool small" data-shell="tree" data-panel="tree" data-icon="tree" aria-label="Model tree" aria-expanded="true" aria-controls="model-tree-panel" title="Show or hide model tree"></button>
+            <button type="button" class="ribbon-tool small" data-shell="visibility" data-icon="eye" aria-label="Visibility options" aria-expanded="false" aria-controls="visibility-options" title="Visibility options"></button>
+          </div>
+          <span class="ribbon-group-label">View</span>
+        </div>
+
+        <div class="ribbon-group" role="group" aria-label="Build" data-show-mode="model">
+          <div class="ribbon-items">
+            <button type="button" class="ribbon-tool" data-tool="rod" data-icon="rod" title="Draw a fixed-length rod">Rod</button>
+            <button type="button" class="ribbon-tool" data-tool="body" data-icon="body" title="Draw a rigid member with mass">Body</button>
+            <button type="button" class="ribbon-tool" data-tool="pin" data-icon="pin-joint" title="Place a movable pin joint">Pin</button>
+            <button type="button" class="ribbon-tool" data-tool="fixed" data-icon="fixed" title="Place a fixed anchor">Fixed</button>
+            <button type="button" class="ribbon-tool" data-tool="rotation" data-icon="rotation" title="Place a rotation point">Rotation point</button>
+          </div>
+          <span class="ribbon-group-label">Build</span>
+        </div>
+
+        <div class="ribbon-group" role="group" aria-label="Dimension" data-show-mode="model">
+          <div class="ribbon-items">
+            <button type="button" class="ribbon-tool" data-tool="dimension" data-icon="ruler" title="Dimension geometry (D)">Dimension</button>
+          </div>
+          <span class="ribbon-group-label">Dimension</span>
+        </div>
+
+        <div class="ribbon-group compact" role="group" aria-label="Constraints" data-show-mode="model">
+          <div class="ribbon-items">
+            <button type="button" class="ribbon-tool small" data-constraint="coincident" data-icon="coincident" aria-label="Coincident" title="Bring two points together"></button>
+            <button type="button" class="ribbon-tool small" data-constraint="horizontal" data-icon="horizontal" aria-label="Horizontal" title="Align geometry horizontally"></button>
+            <button type="button" class="ribbon-tool small" data-constraint="vertical" data-icon="vertical" aria-label="Vertical" title="Align geometry vertically"></button>
+            <button type="button" class="ribbon-tool small" data-constraint="equal_length" data-icon="equal" aria-label="Equal length" title="Keep two members the same length"></button>
+            <button type="button" class="ribbon-tool small" data-constraint="parallel" data-icon="parallel" aria-label="Parallel" title="Keep two members parallel"></button>
+          </div>
+          <span class="ribbon-group-label">Constraints</span>
+        </div>
+
+        <div class="ribbon-group" role="group" aria-label="Forces" data-show-mode="model">
+          <div class="ribbon-items">
+            <button type="button" class="ribbon-tool" data-tool="load" data-icon="force" title="Place a point load">Point load</button>
+            <button type="button" class="ribbon-tool" data-tool="actuator" data-icon="actuator" title="Place a linear actuator">Actuator</button>
+            <button type="button" class="ribbon-tool" data-tool="gas_spring" data-icon="spring" title="Place a gas spring">Gas spring</button>
+            <button type="button" class="ribbon-tool" data-tool="motor" data-icon="motor" title="Place a rotary motor">Motor</button>
+          </div>
+          <span class="ribbon-group-label">Forces</span>
+        </div>
+
+        <div class="ribbon-group" role="group" aria-label="Playback" data-show-mode="simulation" hidden>
+          <div class="ribbon-items">
+            <button type="button" class="ribbon-tool" data-action="play" data-icon="play" title="Run or pause simulation"><span id="play-label">Run</span></button>
+            <button type="button" class="ribbon-tool" data-action="step" data-icon="step" title="Advance the simulation one step">Step</button>
+            <button type="button" class="ribbon-tool" data-action="reset" data-icon="reset" title="Reset to the saved starting pose">Reset pose</button>
+            <button type="button" class="ribbon-tool" data-panel="motion" data-icon="settings" title="Inspect motion settings">Settings</button>
+          </div>
+          <span class="ribbon-group-label">Playback</span>
+        </div>
+
+        <div class="ribbon-group" role="group" aria-label="Paths" data-show-mode="simulation" hidden>
+          <div class="ribbon-items">
+            <button type="button" class="ribbon-tool" data-action="trace" data-icon="trace" aria-pressed="false" title="Toggle path traces for moving pins">Trace paths</button>
+            <button type="button" class="ribbon-tool" data-action="clear-traces" data-icon="trash" title="Clear path traces">Clear traces</button>
+          </div>
+          <span class="ribbon-group-label">Paths</span>
+        </div>
+
+        <div class="ribbon-group" role="group" aria-label="Inspect">
+          <div class="ribbon-items">
+            <button type="button" class="ribbon-tool" data-panel="structure" data-icon="settings" title="Open the selection inspector">Properties</button>
+            <button type="button" class="ribbon-tool" data-panel="results" data-icon="results" title="Inspect mechanism forces and travel">Force results</button>
+            <button type="button" class="ribbon-tool" data-panel="motion" data-icon="settings" data-show-mode="model" title="Set gravity and solver options">Motion settings</button>
+          </div>
+          <span class="ribbon-group-label">Inspect</span>
+        </div>
+      </div>
+      <button type="button" class="icon-button ribbon-pin" data-shell="pin-ribbon" data-icon="pin" aria-label="Unpin ribbon" title="Unpin ribbon" aria-pressed="true"></button>
+    </div>
+  </section>
+
+  <div id="workspace" class="workspace with-tree">
+    <aside id="model-tree-panel" class="model-tree-panel" aria-labelledby="model-tree-title">
+      <header class="panel-header">
+        <h2 id="model-tree-title" data-icon="tree">Model tree</h2>
+        <button type="button" class="icon-button" data-shell="tree" data-icon="close" aria-label="Collapse model tree" title="Collapse model tree"></button>
+      </header>
+      <div id="model-tree"></div>
+    </aside>
+
+    <section class="canvas-area" aria-label="Mechanism drawing">
+      <div id="drawing"></div>
+      <div id="visibility-options" class="visibility-options" role="group" aria-label="Drawing visibility" hidden>
+        <label><input type="checkbox" data-visibility="dimensions" checked>Dimensions</label>
+        <label><input type="checkbox" data-visibility="constraints" checked>Constraints</label>
+        <label><input type="checkbox" data-visibility="loads" checked>Forces</label>
+        <label><input type="checkbox" data-visibility="labels" checked>Names</label>
+        <label><input type="checkbox" data-visibility="grid" checked>Grid</label>
+      </div>
+      <div class="canvas-bottom">
+        <div class="axis" aria-hidden="true"><span>↑ y</span><span>→ x</span></div>
+        <div class="zoom" aria-label="Zoom controls">
+          <button type="button" class="icon-button" data-action="zoom-out" data-icon="zoom-out" title="Zoom out" aria-label="Zoom out"></button>
+          <span id="zoom-level">100%</span>
+          <button type="button" class="icon-button" data-action="zoom-in" data-icon="zoom-in" title="Zoom in" aria-label="Zoom in"></button>
+          <span class="divider" aria-hidden="true"></span>
+          <button type="button" class="icon-button" data-action="fit" data-icon="fit" title="Fit drawing (Ctrl+0)" aria-label="Fit drawing"></button>
+        </div>
+      </div>
+      <div class="canvas-legend" aria-label="Drawing legend">
+        <span><i class="legend-line rod"></i>Rod</span>
+        <span><i class="legend-line body"></i>Weighted body</span>
+        <span><i class="legend-line actuator"></i>Actuator</span>
+        <span><i class="legend-line gas-spring"></i>Gas spring</span>
+        <span><i class="legend-line force"></i>Point load</span>
+        <span><i class="legend-point"></i>Pin joint</span>
+        <span><i class="legend-point fixed"></i>Fixed / rotation point</span>
+      </div>
+    </section>
+
+    <aside id="inspector-panel" class="inspector-panel floating-panel" aria-labelledby="inspector-title" hidden>
+      <header class="panel-header">
+        <h2 id="inspector-title">Properties</h2>
+        <div class="panel-actions">
+          <button type="button" class="icon-button" data-action="dock-panel" data-icon="pin" aria-pressed="false" aria-label="Dock panel" title="Dock panel"></button>
+          <button type="button" class="icon-button" data-action="close-panel" data-icon="close" aria-label="Close panel" title="Close panel"></button>
+        </div>
+      </header>
+      <div id="inspector"></div>
+    </aside>
+  </div>
+
+  <footer class="statusbar">
+    <span id="status-hint">Select a component to inspect it, or choose a drawing tool.</span>
+    <span class="status-units" title="Project display units">mm · N · kg</span>
+    <span id="model-status">Empty sketch</span>
+  </footer>
+
+  <dialog id="help-dialog" aria-labelledby="help-title">
+    <header class="dialog-header">
+      <h2 id="help-title">Help &amp; shortcuts</h2>
+      <form method="dialog"><button class="icon-button" data-icon="close" aria-label="Close help" title="Close help"></button></form>
+    </header>
+    <p>Build the mechanism in Model, then select Simulation to pose it or run it. Select a part on the drawing or in the model tree to edit its properties.</p>
+    <dl class="shortcut-list">
+      <div><dt>Select / pan</dt><dd><kbd>V</kbd> <kbd>H</kbd></dd></div>
+      <div><dt>Dimension</dt><dd><kbd>D</kbd></dd></div>
+      <div><dt>Undo / redo</dt><dd><kbd>Ctrl+Z</kbd> <kbd>Ctrl+Y</kbd></dd></div>
+      <div><dt>Save project</dt><dd><kbd>Ctrl+S</kbd></dd></div>
+      <div><dt>Fit drawing</dt><dd><kbd>Ctrl+0</kbd></dd></div>
+      <div><dt>Open simulation</dt><dd><kbd>F5</kbd></dd></div>
+      <div><dt>Clear the current pick or leave a tool</dt><dd><kbd>Esc</kbd></dd></div>
+    </dl>
+  </dialog>
+</main>
+</body>
+</html>
