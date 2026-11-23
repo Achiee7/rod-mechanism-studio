@@ -11,8 +11,9 @@ Recreate the Windows rod mechanism calculator as a browser app. Preserve its eng
 - 2026-11-23 · The user considers Frame Studio’s design ready to reuse. Use GPT-6.2 Sol agents for implementation. Created this log before starting work.
 - Prior Frame Studio decisions carried forward: CAD ribbon, collapsible left tree, editable properties, visible tool feedback, local saves, and a shareable GitHub Pages URL. Its public release uses Achiee7 and GPL-3.0.
 - Legacy mechanism priorities: real hinges and anchors, rigid links and weighted bodies, editable loads and pistons, separate design/simulation poses, signed hold force, hand effort, and stroke sizing.
-- Rebuilt and browser-tested the 2D studio. Nine engine regressions pass, including Windows hatch parity (324.59 N hold). Public repository created at Achiee7/rod-mechanism-studio.
+- Rebuilt and browser-tested the 2D studio. Nine engine regressions pass, including Windows hatch parity (324.59 N hold).
+- Published under GPL-3.0 at [Achiee7/rod-mechanism-studio](https://github.com/Achiee7/rod-mechanism-studio). [The live calculator](https://achiee7.github.io/rod-mechanism-studio/) deploys from main.
 
-## Open
+## Scope for later
 
-- Release destination is GitHub Pages from main. The 3D frame workspace and team collaboration belong to the earlier Frame Studio project and are outside the scope of this 2D release.
+- The earlier Frame Studio project also had 3D and team collaboration. This release targets standalone 2D mechanism work. No follow-up feature has been requested.
