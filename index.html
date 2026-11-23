@@ -118,6 +118,17 @@
           <span class="ribbon-group-label">Playback</span>
         </div>
 
+        <div class="ribbon-group" role="group" aria-label="Piston drive" data-show-mode="simulation" hidden>
+          <div class="ribbon-items">
+            <div class="physics-modes" role="radiogroup" aria-label="Piston drive mode">
+              <label title="Use the installed piston force. An opposing load can stall or backdrive the piston."><input type="radio" name="physics-mode" value="real" checked>Real physics</label>
+              <label title="Drive the piston through its available travel, even above its force rating."><input type="radio" name="physics-mode" value="forced">Forced motion</label>
+            </div>
+            <button type="button" class="ribbon-tool" data-action="reverse-travel" data-icon="reverse" aria-pressed="false" title="Reverse the commanded travel of the pistons in this simulation" hidden>Reverse travel</button>
+          </div>
+          <span class="ribbon-group-label">Piston drive</span>
+        </div>
+
         <div class="ribbon-group" role="group" aria-label="Paths" data-show-mode="simulation" hidden>
           <div class="ribbon-items">
             <button type="button" class="ribbon-tool" data-action="trace" data-icon="trace" aria-pressed="false" title="Toggle path traces for moving pins">Trace paths</button>
@@ -157,6 +168,7 @@
 
     <section class="canvas-area" aria-label="Mechanism drawing">
       <div id="drawing"></div>
+      <button type="button" id="piston-alert" class="piston-alert" data-action="inspect-piston-alert" hidden></button>
       <div id="visibility-options" class="visibility-options" role="group" aria-label="Drawing visibility" hidden>
         <label><input type="checkbox" data-visibility="dimensions" checked>Dimensions</label>
         <label><input type="checkbox" data-visibility="constraints" checked>Constraints</label>
@@ -224,7 +236,8 @@
     </header>
     <p>Build the mechanism in Model, then select Simulation to pose it or run it. Select a part on the drawing or in the model tree to edit its properties.</p>
     <p>Drag a selection box left to right to enclose parts, or right to left to include parts the box crosses. Hold Shift to add to the selection. Ctrl-click a second part to constrain a pair.</p>
-    <p>In Simulation, choose a playback speed or step one frame. In Analysis, choose a drive link and angle range to inspect travel, forces and piston requirements. The eye button controls force overlays.</p>
+    <p>In Simulation, Real physics applies the installed piston force. Forced motion drives through the available stroke and flags overloads. Both modes respect the hard stops. The eye button controls force overlays.</p>
+    <p>In Analysis, choose a drive link and angle range. The graph includes angles outside the installed travel for sizing. Only reachable poses move the drawing.</p>
     <dl class="shortcut-list">
       <div><dt>Select / pan</dt><dd><kbd>V</kbd> <kbd>H</kbd></dd></div>
       <div><dt>Dimension</dt><dd><kbd>D</kbd></dd></div>
