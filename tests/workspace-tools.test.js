@@ -15,17 +15,18 @@ test('playback speed and display frequency only change the number of fixed steps
   }
 });
 
-test('playback stops on the first refused step and resumes without a time jump', () => {
-  const clock = new PlaybackClock();
-  let calls = 0;
-  const stop = {accepted:false};
-  const sim = {step: () => {calls++; return stop;}};
-  clock.advance(0, 4, sim);
-  assert.equal(clock.advance(100, 4, sim), stop);
-  assert.equal(calls, 1);
-  clock.advance(3000, 4, sim);
-  assert.equal(calls, 1);
-});
+for (const stop of [{accepted:false}, {accepted:true, settled:true}]) {
+  test('playback pauses and resumes without a time jump after ' + (stop.settled ? 'settling' : 'a refused step'), () => {
+    const clock = new PlaybackClock();
+    let calls = 0;
+    const sim = {step: () => {calls++; return stop;}};
+    clock.advance(0, 4, sim);
+    assert.equal(clock.advance(100, 4, sim), stop);
+    assert.equal(calls, 1);
+    clock.advance(3000, 4, sim);
+    assert.equal(calls, 1);
+  });
+}
 
 test('group movement preserves internal dimensions and rejects external driving dimensions', () => {
   const model = normalizeMechanism({joints:[{id:1,x:0,y:0},{id:2,x:1,y:0}],
