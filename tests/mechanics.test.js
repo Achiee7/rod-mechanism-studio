@@ -498,6 +498,122 @@ test("forced return leaves the hatch spring rated for push and reports the neede
   assert.equal(pistonLoads(simulation.model)[spring.id].commandMode, "push");
 });
 
+function shortStrokeHatch() {
+  const pivotX = -0.0006993006993006993;
+  const extended = Math.hypot(pivotX, 0.25);
+  return normalizeMechanism({
+    joints: [
+      { ...point(0, 0, 0, "origin"), mass: 0 },
+      { ...point(1, pivotX, 0, "rotation"), mass: 0.05 },
+      { ...point(2, pivotX + 1.5, 0), mass: 0.05 },
+      { ...point(3, 1.5, -0.25, "fixed"), mass: 0.05 },
+    ],
+    elements: [
+      { id: 1, kind: "body", a: 1, b: 2, length: 1.5, mass: 10 },
+      {
+        id: 2, kind: "gas_spring", a: 3, b: 2, mass: 0, force: 200,
+        forceMode: "pull", minLength: extended * 0.65, maxLength: extended, autoReturn: false,
+      },
+    ],
+    dimensions: [{ id: 1, kind: "distance", a: 1, b: 2, value: 1.5, driving: true }],
+  });
+}
+
+test("the short-stroke pull spring lowers the hatch and forced return reports the upward effort", () => {
+  const model = shortStrokeHatch();
+  const simulation = new Simulation(model, { physicsMode: "forced" });
+  const spring = simulation.model.elements[1];
+  const tip = simulation.model.joints.find(joint => joint.id === 2);
+  const report = () => currentForces(simulation.model, { physicsMode: "forced", pistonId: spring.id });
+  const travelToStop = (direction, limit) => {
+    const startTime = simulation.time;
+    let steps = 0;
+    for (; steps < 120; steps++) {
+      const lastY = tip.y;
+      const result = simulation.step(1 / 120);
+      assert.ok(result.validity.valid);
+      close(distance(simulation.model, 1, 2), 1.5, 1e-8);
+      const length = distance(simulation.model, spring.a, spring.b);
+      assert.ok(length >= spring.minLength - 1e-7 && length <= spring.maxLength + 1e-7);
+      assert.ok(direction * (tip.y - lastY) >= -1e-8);
+      assert.ok(Math.abs(tip.y - lastY) < 0.001);
+      if (!result.accepted) break;
+    }
+    assert.ok(steps < 120);
+    close(simulation.time - startTime, 1 / 1.15, 1 / 120);
+    close(distance(simulation.model, spring.a, spring.b), limit, 1e-7);
+  };
+
+  const initial = report();
+  assert.equal(initial.handleBalance.stopSupported, false);
+  close(initial.elements[spring.id].axialForce, -200);
+  close(initial.handleBalance.downwardExternalLoad, 98.5905);
+  close(initial.handleBalance.equivalentExternal, 49.5405);
+  close(initial.handleBalance.pistonContribution, -199.999217570);
+  close(initial.handleBalance.extra, 249.539717570);
+
+  travelToStop(-1, spring.minLength);
+  close(tip.y, -0.08753198, 1e-7);
+  assert.equal(report().pistons[2].atStop, "min");
+  assert.equal(report().pistons[2].commandShortfall, 0);
+
+  simulation.reverseForcedTravel();
+  const reversed = report();
+  assert.equal(reversed.handleBalance.stopSupported, true);
+  assert.equal(reversed.handleBalance.stopLocked, false);
+  close(reversed.elements[spring.id].limitForce, 249.608549, 1e-4);
+  assert.equal(reversed.pistons[2].commandMode, "push");
+  assert.equal(reversed.pistons[2].ratedForce, -200);
+  assert.equal(reversed.pistons[2].commandCapacity, 0);
+  close(reversed.pistons[2].signedCommandShortfall, 249.608549, 1e-4);
+  close(reversed.handleBalance.extra, 249.266156, 1e-4);
+
+  travelToStop(1, spring.maxLength);
+  assert.equal(report().pistons[2].atStop, "max");
+  assert.equal(report().handleBalance.stopSupported, false);
+  close(tip.y, 0, 1e-7);
+  close(report().pistons[2].signedCommandShortfall, 249.540694, 1e-4);
+  assert.equal(model.elements[1].forceMode, "pull");
+});
+
+test("rated hatch playback converges across time steps and settles at the compressed stop", () => {
+  const model = shortStrokeHatch();
+  const initial = new Simulation(model);
+  const briefStep = 1e-4;
+  const tipRadius = model.elements[0].length;
+  const inertia = (model.elements[0].mass / 3 + model.joints[2].mass) * tipRadius ** 2;
+  const torque = -(49.5405 + 199.999217570) * tipRadius;
+  initial.step(briefStep);
+  const initialTip = initial.model.joints.find(joint => joint.id === 2);
+  close(Math.asin(initialTip.y / tipRadius), (torque / inertia) * briefStep ** 2 / 2, 1e-10);
+
+  const simulate = divisor => {
+    const simulation = new Simulation(model);
+    const spring = simulation.model.elements[1];
+    const tip = simulation.model.joints.find(joint => joint.id === 2);
+    for (let step = 0; step < divisor / 30; step++) assert.equal(simulation.step(1 / divisor).accepted, true);
+    const movingY = tip.y;
+    assert.ok(movingY < 0 && movingY > -0.08753198);
+    let settled = false;
+    for (let step = 0; step < divisor / 6; step++) {
+      const result = simulation.step(1 / divisor);
+      assert.equal(result.accepted, true);
+      settled ||= result.settled;
+    }
+    assert.equal(settled, true);
+    close(distance(simulation.model, 1, 2), 1.5, 1e-8);
+    close(distance(simulation.model, spring.a, spring.b), spring.minLength, 1e-7);
+    const forces = currentForces(simulation.model, { dynamic: true });
+    const stop = forces.pistons[spring.id];
+    assert.equal(forces.handleBalance.stopSupported, true);
+    assert.equal(stop.driveState, "stroke-stop");
+    close(stop.appliedForce, -200);
+    close(stop.limitForce, 249.608549, 1e-4);
+    return movingY;
+  };
+  close(simulate(120), simulate(480), 1.5e-4);
+});
+
 test("gravity can assist reverse travel rather than overloading its zero rated pull capacity", () => {
   const simulation = new Simulation(straightPiston({ y: 1 }), { physicsMode: "forced" });
   simulation.reverseForcedTravel();

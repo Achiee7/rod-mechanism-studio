@@ -17,7 +17,7 @@ export class PlaybackClock {
       const steps = Math.floor((this.remainder + 1e-12) / physicsStep);
       for (let i = 0; i < steps; i++) {
         const result = simulation.step(physicsStep);
-        if (result?.accepted === false) {
+        if (result?.accepted === false || result?.settled) {
           this.reset();
           return result;
         }

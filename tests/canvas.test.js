@@ -86,6 +86,7 @@ test('a piston badge handles zero capacity, zero shortfall, and unavailable forc
 
 test('manual assist labels report actual up, down, and inclined drawing directions', () => {
   assert.equal(assistArrowLabel({ fx: 0, fy: 42 }, 'Hatch tip'), 'Manual lift · 42 N up at Hatch tip');
+  assert.equal(assistArrowLabel({ fx: 0, fy: 42, atStop: true }, 'Hatch tip'), 'Release from stop · 42 N up at Hatch tip');
   assert.equal(assistArrowLabel({ fx: 0, fy: -42 }, 'Hatch tip'), 'Manual force · 42 N down at Hatch tip');
   assert.equal(assistArrowLabel({ fx: -30, fy: 40 }, 'Hatch tip'), 'Manual force · 50 N up and left at Hatch tip');
   assert.equal(assistArrowLabel({ fx: 0, fy: 0 }, 'Hatch tip'), null);

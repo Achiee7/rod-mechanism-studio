@@ -9,6 +9,8 @@ export {
 } from "./mechanism-model.js";
 
 const EPSILON = 1e-9;
+const HINGE_STROKE_TOLERANCE = 1e-12;
+const RESTING_SPEED = 1e-5;
 const GRAVITY = 9.81;
 const MIN_INERTIAL_MASS = 0.001;
 
@@ -929,6 +931,7 @@ export function handleForceBalance(model, {
     status: "unavailable", reason: "", handleId: selectedHandle?.id ?? null, handleName: handleName(selectedHandle),
     downwardExternalLoad: null, gravityLoad: null, pointDownwardLoad: null,
     equivalentExternal: null, pistonContribution: null, extra: null, pistons: [], basis: null, forceBasis: null,
+    stopSupported: false, stopLocked: false,
   };
   const unavailable = reason => ({ ...result, reason });
   if (handleId != null && (!selectedHandle || isFixed(selectedHandle))) {
@@ -978,17 +981,28 @@ export function handleForceBalance(model, {
     return unavailable("The handle cannot move vertically at this pose.");
   }
   const contribution = [];
+  let blocksUp = false;
+  let blocksDown = false;
   for (const [id, { arm, configuredForce, forceBasis }] of work.pistons) {
-    contribution.push({ id, axialForce: configuredForce, contribution: configuredForce * arm / work.handle.arm, forceBasis });
+    const lengthPerLift = arm / work.handle.arm;
+    contribution.push({ id, axialForce: configuredForce, contribution: configuredForce * lengthPerLift, forceBasis });
+    if (Math.abs(lengthPerLift) <= 1e-8) continue;
+    const stop = validity.pistons[id].atStop;
+    blocksUp ||= stop === "both" || stop === (lengthPerLift > 0 ? "max" : "min");
+    blocksDown ||= stop === "both" || stop === (lengthPerLift > 0 ? "min" : "max");
   }
   const equivalentExternal = -work.externalWork / work.handle.arm || 0;
   const pistonContribution = contribution.reduce((sum, item) => sum + item.contribution, 0);
+  const extra = equivalentExternal - pistonContribution;
+  // Without a hand on the handle, the load acts opposite to the balancing effort.
+  const stopLocked = blocksUp && blocksDown;
+  const stopSupported = stopLocked || (extra > 1e-6 && blocksDown) || (extra < -1e-6 && blocksUp);
   const bases = new Set(contribution.map(item => item.forceBasis));
   const forceBasis = bases.size > 1 ? "mixed" : bases.values().next().value
     ?? (physicsMode === "forced" ? "configured-in-forced-pose" : "configured-at-pose");
   return {
     ...result, status: "available", basis: group ? "one-dof" : "vertical-axis", forceBasis,
-    equivalentExternal, pistonContribution, extra: equivalentExternal - pistonContribution, pistons: contribution,
+    equivalentExternal, pistonContribution, extra, pistons: contribution, stopSupported, stopLocked,
   };
 }
 
@@ -1368,8 +1382,21 @@ export class Simulation {
     const connected = connectedFrom([pivot.id], neighborsOf(links.map(({ a, b }) => ({ a: a.id, b: b.id }))));
     if (!free.every(joint => connected.has(joint.id))) return null;
     const rest = free.map(joint => ({ joint, x: joint.x - pivot.x, y: joint.y - pivot.y }));
-    const inertia = rest.reduce((sum, { joint, x, y }) => sum + this.masses.get(joint.id) * (x * x + y * y), 0);
-    return inertia > 1e-8 ? { angle: 0, speed: 0, pivot, rest, inertia } : null;
+    const pointMasses = new Map(this.masses);
+    let bodyInertia = 0;
+    for (const { a, b, element } of bodyLinks) {
+      const mass = element.mass;
+      pointMasses.set(a.id, pointMasses.get(a.id) - mass / 2);
+      pointMasses.set(b.id, pointMasses.get(b.id) - mass / 2);
+      const ax = a.x - pivot.x;
+      const ay = a.y - pivot.y;
+      const bx = b.x - pivot.x;
+      const by = b.y - pivot.y;
+      // The mean squared radius along a uniform body segment.
+      bodyInertia += mass * ((ax * ax + ax * bx + bx * bx) + (ay * ay + ay * by + by * by)) / 3;
+    }
+    const inertia = rest.reduce((sum, { joint, x, y }) => sum + pointMasses.get(joint.id) * (x * x + y * y), bodyInertia);
+    return inertia > 1e-8 ? { angle: 0, speed: 0, pivot, rest, inertia, pointMasses, bodyLinks } : null;
   }
 
   placeHinge(angle) {
@@ -1388,7 +1415,7 @@ export class Simulation {
       const { a, b, element } = piston;
       const { length } = axis(a, b);
       const [min, max] = stroke(element, length);
-      if (length < min - 1e-8 || length > max + 1e-8) return piston;
+      if (length < min - HINGE_STROKE_TOLERANCE || length > max + HINGE_STROKE_TOLERANCE) return piston;
     }
     return null;
   }
@@ -1419,10 +1446,11 @@ export class Simulation {
   }
 
   integrateHinge(dt) {
-    const { pivot, rest, inertia } = this.hinge;
+    const { pivot, rest, inertia, pointMasses, bodyLinks } = this.hinge;
     const torque = rest.reduce((sum, { joint }) => sum + torqueAt(joint, pivot, joint.fx, joint.fy), 0);
     const speed = (this.hinge.speed + torque / inertia * dt) * (1 - this.model.options.damping) ** (dt * 60);
-    const stop = this.moveHinge(this.hinge.angle + clamp(speed * dt, -0.2, 0.2));
+    const travel = (this.hinge.speed + speed) * dt / 2;
+    const stop = this.moveHinge(this.hinge.angle + clamp(travel, -0.2, 0.2));
     const nextSpeed = stop ? 0 : speed;
     const acceleration = (nextSpeed - this.hinge.speed) / dt;
     this.hinge.speed = nextSpeed;
@@ -1438,21 +1466,44 @@ export class Simulation {
         this.addReaction(a, b, direction, element.limitForce);
       }
     }
-    const residual = new Map();
+    const accelerations = new Map([[pivot, { x: 0, y: 0 }]]);
+    const inertiaForces = new Map([[pivot, { x: 0, y: 0 }]]);
     for (const { joint } of rest) {
       const x = joint.x - pivot.x;
       const y = joint.y - pivot.y;
-      const mass = this.masses.get(joint.id);
-      const fx = mass * (-x * nextSpeed * nextSpeed - y * acceleration);
-      const fy = mass * (-y * nextSpeed * nextSpeed + x * acceleration);
-      residual.set(joint.id, { x: joint.fx - fx, y: joint.fy - fy });
-      if (stopped) {
-        const sign = joint === stopped.a ? -1 : joint === stopped.b ? 1 : 0;
-        residual.get(joint.id).x += sign * stopped.direction.x * stopped.force;
-        residual.get(joint.id).y += sign * stopped.direction.y * stopped.force;
-      }
+      const mass = pointMasses.get(joint.id);
+      const ax = -x * nextSpeed * nextSpeed - y * acceleration;
+      const ay = -y * nextSpeed * nextSpeed + x * acceleration;
+      accelerations.set(joint, { x: ax, y: ay });
+      inertiaForces.set(joint, { x: mass * ax, y: mass * ay });
       joint.vx = -y * nextSpeed;
       joint.vy = x * nextSpeed;
+    }
+    for (const { a, b, element } of bodyLinks) {
+      const atA = accelerations.get(a);
+      const atB = accelerations.get(b);
+      const inertiaA = inertiaForces.get(a);
+      const inertiaB = inertiaForces.get(b);
+      const sixthMass = element.mass / 6;
+      // Acceleration varies linearly along a rigid segment. Integrate its
+      // inertia against the endpoint weights used to report member forces.
+      inertiaA.x += sixthMass * (2 * atA.x + atB.x);
+      inertiaA.y += sixthMass * (2 * atA.y + atB.y);
+      inertiaB.x += sixthMass * (atA.x + 2 * atB.x);
+      inertiaB.y += sixthMass * (atA.y + 2 * atB.y);
+    }
+    pivot.reactionX += inertiaForces.get(pivot).x;
+    pivot.reactionY += inertiaForces.get(pivot).y;
+    const residual = new Map();
+    for (const { joint } of rest) {
+      const force = inertiaForces.get(joint);
+      const load = { x: joint.fx - force.x, y: joint.fy - force.y };
+      if (stopped) {
+        const sign = joint === stopped.a ? -1 : joint === stopped.b ? 1 : 0;
+        load.x += sign * stopped.direction.x * stopped.force;
+        load.y += sign * stopped.direction.y * stopped.force;
+      }
+      residual.set(joint.id, load);
     }
     const solution = equilibrium(this.constraints, rest.map(({ joint }) => joint), residual, false);
     for (const [index, { element, a, b }] of this.constraints.entries()) {
@@ -1576,6 +1627,7 @@ export class Simulation {
     this.motionMessage = "";
     const stride = elapsed / steps;
     let completed = 0;
+    let settled = false;
     for (let index = 0; index < steps; index++) {
       const before = this.snapshot();
       const driven = this.physicsMode === "forced" ? this.forceDrive(stride) : (this.integrate(stride), true);
@@ -1599,15 +1651,34 @@ export class Simulation {
         for (const { element, a, b } of this.pistons) {
           const direction = axis(a, b);
           const relativeSpeed = (b.vx - a.vx) * direction.x + (b.vy - a.vy) * direction.y;
-          element.driveState = relativeSpeed * pistonDirection(element) < -1e-5 ? "backdriven"
-            : validity.pistons[element.id].atStop && Math.abs(relativeSpeed) <= 1e-5 ? "stroke-stop" : "rated";
+          element.driveState = relativeSpeed * pistonDirection(element) < -RESTING_SPEED ? "backdriven"
+            : validity.pistons[element.id].atStop && Math.abs(relativeSpeed) <= RESTING_SPEED ? "stroke-stop" : "rated";
         }
+        settled = this.isRestingAtStrokeStop(before, stride);
       }
       completed++;
     }
     this.time += completed * stride;
     this.recordTraces();
-    return this.result(completed === steps);
+    const accepted = completed === steps;
+    if (accepted && settled) this.motionMessage = "The mechanism is resting at a piston stroke stop.";
+    return this.result(accepted, { settled: accepted && settled });
+  }
+
+  isRestingAtStrokeStop(before, dt) {
+    if (this.pistons.some(({ element }) => element.autoReturn)) return false;
+    const loadedStop = this.pistons.some(({ element }) => {
+      const { atStop } = this.validity.pistons[element.id];
+      if (atStop === "both") return Math.abs(element.limitForce) > EPSILON;
+      return (atStop === "min" && element.limitForce > EPSILON) || (atStop === "max" && element.limitForce < -EPSILON);
+    });
+    if (!loadedStop) return false;
+    return this.model.joints.every((joint, index) => {
+      const prior = before.joints[index];
+      return Math.hypot(prior.vx, prior.vy) <= RESTING_SPEED
+        && Math.hypot(joint.vx, joint.vy) <= RESTING_SPEED
+        && Math.hypot(joint.x - prior.x, joint.y - prior.y) <= RESTING_SPEED * dt;
+    });
   }
 
   reversePistons(modeKey = "forceMode") {
