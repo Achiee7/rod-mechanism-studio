@@ -4,7 +4,7 @@ Read this file before working. After each user prompt and assistant response, re
 
 ## Goal
 
-Recreate the Windows rod mechanism calculator as a browser app. Preserve its engineering purpose and core mechanism. Match Frame Studio’s design and layout, adapting its controls and workspace for rod mechanisms. Publish on GitHub.
+Build a browser studio for analyzing feasible 2D linkage paths, the forces they exert, and the pistons they require. Preserve the Windows calculator’s engineering workflow and Frame Studio’s design and layout. Publish on GitHub.
 
 ## Decisions and progress
 
@@ -13,7 +13,10 @@ Recreate the Windows rod mechanism calculator as a browser app. Preserve its eng
 - Legacy mechanism priorities: real hinges and anchors, rigid links and weighted bodies, editable loads and pistons, separate design/simulation poses, signed hold force, hand effort, and stroke sizing.
 - Rebuilt and browser-tested the 2D studio. Nine engine regressions pass, including Windows hatch parity (324.59 N hold).
 - Published under GPL-3.0 at [Achiee7/rod-mechanism-studio](https://github.com/Achiee7/rod-mechanism-studio). [The live calculator](https://achiee7.github.io/rod-mechanism-studio/) deploys from main.
+- Added directional box selection and group editing, 0.1×–4× playback, force overlays, and fixed-barrel pistons with reversible mounting.
+- Analysis now sweeps a constrained linkage, previews poses, charts/exports forces and sizes pistons. The example has a rigid bracket; older projects preserve their original joints.
+- Verified 23 regressions including four-bar closure, hatch stroke stops, force balance and playback. The updated hatch sweep (−22° to 0°) needs 291.2 mm of travel and peaks at 324.59 N push.
 
 ## Scope for later
 
-- The earlier Frame Studio project also had 3D and team collaboration. This release targets standalone 2D mechanism work. No follow-up feature has been requested.
+- The earlier Frame Studio project also had 3D and team collaboration. This studio targets standalone 2D mechanism work.

@@ -30,6 +30,7 @@
       <button type="button" data-action="open" data-icon="open">Open project</button>
       <button type="button" data-action="export" data-icon="export">Export project</button>
       <button type="button" data-action="example" data-icon="mechanism">Load example</button>
+      <button type="button" data-action="restore-saved" data-icon="reset">Restore saved design</button>
       <button type="button" data-action="help" data-icon="help">Help &amp; shortcuts</button>
     </nav>
     <input id="project-file" type="file" accept=".json,application/json" hidden>
@@ -39,6 +40,7 @@
     <nav class="mode-tabs" aria-label="Workspace mode">
       <button type="button" class="tab" data-mode="model" aria-pressed="true">Model</button>
       <button type="button" class="tab" data-mode="simulation" aria-pressed="false" title="Open simulation (F5)">Simulation</button>
+      <button type="button" class="tab" data-mode="analysis" aria-pressed="false">Analysis</button>
     </nav>
     <div class="sub-actions" aria-label="Project actions">
       <button type="button" class="icon-button" data-action="undo" data-icon="undo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled></button>
@@ -53,7 +55,7 @@
       <div class="ribbon-scroll" role="toolbar" aria-label="Mechanism commands">
         <div class="ribbon-group compact" role="group" aria-label="View">
           <div class="ribbon-items">
-            <button type="button" class="ribbon-tool small" data-tool="select" data-icon="select" aria-pressed="true" aria-label="Select" title="Select and drag components (V)"></button>
+            <button type="button" class="ribbon-tool small" data-tool="select" data-icon="select" aria-pressed="true" aria-label="Select" title="Select, or drag a box on empty space (V)"></button>
             <button type="button" class="ribbon-tool small" data-tool="pan" data-icon="pan" aria-pressed="false" aria-label="Pan" title="Drag to pan the view (H)"></button>
             <button type="button" class="ribbon-tool small" data-shell="tree" data-panel="tree" data-icon="tree" aria-label="Model tree" aria-expanded="true" aria-controls="model-tree-panel" title="Show or hide model tree"></button>
             <button type="button" class="ribbon-tool small" data-shell="visibility" data-icon="eye" aria-label="Visibility options" aria-expanded="false" aria-controls="visibility-options" title="Visibility options"></button>
@@ -105,6 +107,12 @@
             <button type="button" class="ribbon-tool" data-action="play" data-icon="play" title="Run or pause simulation"><span id="play-label">Run</span></button>
             <button type="button" class="ribbon-tool" data-action="step" data-icon="step" title="Advance the simulation one step">Step</button>
             <button type="button" class="ribbon-tool" data-action="reset" data-icon="reset" title="Reset to the saved starting pose">Reset pose</button>
+            <label class="speed-control">Speed
+              <select id="playback-speed" aria-label="Simulation speed">
+                <option value=".1">0.1×</option><option value=".25">0.25×</option><option value=".5">0.5×</option>
+                <option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option>
+              </select>
+            </label>
             <button type="button" class="ribbon-tool" data-panel="motion" data-icon="settings" title="Inspect motion settings">Settings</button>
           </div>
           <span class="ribbon-group-label">Playback</span>
@@ -118,7 +126,14 @@
           <span class="ribbon-group-label">Paths</span>
         </div>
 
-        <div class="ribbon-group" role="group" aria-label="Inspect">
+        <div class="ribbon-group" role="group" aria-label="Analysis" data-show-mode="analysis" hidden>
+          <div class="ribbon-items">
+            <button type="button" class="ribbon-tool" data-action="excursion" data-icon="trace" aria-pressed="true">Joint paths</button>
+            <button type="button" class="ribbon-tool" data-action="export-path" data-icon="export" title="Download sampled angles, positions, forces and stroke as CSV">Export sweep</button>
+          </div>
+          <span class="ribbon-group-label">Analysis</span>
+        </div>
+        <div class="ribbon-group" role="group" aria-label="Inspect" data-hide-mode="analysis">
           <div class="ribbon-items">
             <button type="button" class="ribbon-tool" data-panel="structure" data-icon="settings" title="Open the selection inspector">Properties</button>
             <button type="button" class="ribbon-tool" data-panel="results" data-icon="results" title="Inspect mechanism forces and travel">Force results</button>
@@ -145,9 +160,22 @@
       <div id="visibility-options" class="visibility-options" role="group" aria-label="Drawing visibility" hidden>
         <label><input type="checkbox" data-visibility="dimensions" checked>Dimensions</label>
         <label><input type="checkbox" data-visibility="constraints" checked>Constraints</label>
-        <label><input type="checkbox" data-visibility="loads" checked>Forces</label>
+        <label><input type="checkbox" data-visibility="pointLoads" checked>Point loads</label>
         <label><input type="checkbox" data-visibility="labels" checked>Names</label>
         <label><input type="checkbox" data-visibility="grid" checked>Grid</label>
+        <label data-show-mode="model"><input type="checkbox" data-visibility="snap" checked>Snap to grid</label>
+        <details class="force-layers" open>
+          <summary>Force overlays</summary>
+          <label><input type="checkbox" data-visibility="loads">Show calculated forces</label>
+          <label><input type="checkbox" data-visibility="applied" checked>Applied forces and gravity</label>
+          <label><input type="checkbox" data-visibility="members" checked>Member axial forces</label>
+          <label><input type="checkbox" data-visibility="pistons" checked>Piston thrust</label>
+          <label><input type="checkbox" data-visibility="motors" checked>Motor torque</label>
+          <label><input type="checkbox" data-visibility="stops" checked>Stroke-stop forces</label>
+          <label><input type="checkbox" data-visibility="reactions" checked>Support reactions</label>
+          <label><input type="checkbox" data-visibility="resultants" checked>Joint resultants</label>
+          <label><input type="checkbox" data-visibility="assist" checked>Manual lift estimate</label>
+        </details>
       </div>
       <div class="canvas-bottom">
         <div class="axis" aria-hidden="true"><span>↑ y</span><span>→ x</span></div>
@@ -184,6 +212,7 @@
 
   <footer class="statusbar">
     <span id="status-hint">Select a component to inspect it, or choose a drawing tool.</span>
+    <span id="pointer-position" aria-label="Pointer coordinates"></span>
     <span class="status-units" title="Project display units">mm · N · kg</span>
     <span id="model-status">Empty sketch</span>
   </footer>
@@ -194,6 +223,8 @@
       <form method="dialog"><button class="icon-button" data-icon="close" aria-label="Close help" title="Close help"></button></form>
     </header>
     <p>Build the mechanism in Model, then select Simulation to pose it or run it. Select a part on the drawing or in the model tree to edit its properties.</p>
+    <p>Drag a selection box left to right to enclose parts, or right to left to include parts the box crosses. Hold Shift to add to the selection. Ctrl-click a second part to constrain a pair.</p>
+    <p>In Simulation, choose a playback speed or step one frame. In Analysis, choose a drive link and angle range to inspect travel, forces and piston requirements. The eye button controls force overlays.</p>
     <dl class="shortcut-list">
       <div><dt>Select / pan</dt><dd><kbd>V</kbd> <kbd>H</kbd></dd></div>
       <div><dt>Dimension</dt><dd><kbd>D</kbd></dd></div>
