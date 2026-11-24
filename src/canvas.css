@@ -3,7 +3,7 @@
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #f7f9f7;
+  background: var(--canvas-bg);
   touch-action: none;
   user-select: none;
   outline-offset: -2px;
@@ -15,16 +15,16 @@
 .mechanism-drawing.is-panning,
 .mechanism-drawing.is-dragging { cursor: grabbing; }
 .drawing-grid-minor, .drawing-grid-major { fill: none; }
-.drawing-grid-minor { stroke: #e7ece9; stroke-width: .75; }
-.drawing-grid-major { stroke: #d7dfda; stroke-width: 1; }
+.drawing-grid-minor { stroke: color-mix(in srgb, var(--ink) 7%, var(--canvas-bg)); stroke-width: .75; }
+.drawing-grid-major { stroke: color-mix(in srgb, var(--ink) 16%, var(--canvas-bg)); stroke-width: 1; }
 
 .drawing-geometry [role='button'] { outline: none; }
 .tool-select:not(.is-dragging) .drawing-geometry [role='button'] { cursor: pointer; }
 .tool-select:not(.is-dragging) .joint-pin { cursor: grab; }
 .drawing-geometry [role='button']:focus-visible .drawing-hit,
 .drawing-geometry .paired .drawing-hit {
-  stroke: #7486c5;
-  fill: #dae2f7;
+  stroke: light-dark(#7486c5, #b1c3ff);
+  fill: light-dark(#dae2f7, #364967);
   opacity: .6;
 }
 
@@ -32,7 +32,7 @@
 circle.drawing-hit { stroke-width: 1; }
 .drawing-label, .force-label, .result-force-label, .moment-label {
   paint-order: stroke;
-  stroke: #f7f9f7;
+  stroke: var(--canvas-bg);
   stroke-width: 4px;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -40,21 +40,22 @@ circle.drawing-hit { stroke-width: 1; }
   pointer-events: none;
 }
 
-.drawing-label { fill: #4f665c; }
-.joint-ground { stroke: #556c61; stroke-width: 1.35; fill: none; stroke-linecap: round; stroke-linejoin: round; }
-.joint-centre { fill: #fff; stroke: #326dcc; stroke-width: 1.9; }
-.joint-core { fill: #326dcc; }
-.joint-rotation .joint-centre, .joint-fixed .joint-centre { stroke: #3f584c; }
-.joint-rotation .joint-core, .joint-fixed .joint-centre { fill: #3f584c; }
-.joint-origin .joint-ground, .joint-origin .joint-centre { stroke: #876d99; }
-.joint-halo { fill: #16856915; stroke: #168569; stroke-width: 1.2; pointer-events: none; }
+.drawing-label { fill: var(--muted); }
+.joint-ground { stroke: var(--muted); stroke-width: 1.35; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.joint-centre { fill: var(--surface); stroke: light-dark(#326dcc, #8ac1ff); stroke-width: 1.9; }
+.joint-core { fill: light-dark(#326dcc, #8ac1ff); }
+.joint-rotation .joint-centre, .joint-fixed .joint-centre { stroke: var(--ink); }
+.joint-rotation .joint-core, .joint-fixed .joint-centre { fill: var(--ink); }
+.joint-origin .joint-ground, .joint-origin .joint-centre { stroke: light-dark(#876d99, #caa6e0); }
+.joint-halo { fill: color-mix(in srgb, var(--accent) 12%, transparent); stroke: var(--accent); stroke-width: 1.2; pointer-events: none; }
 
-.drawing-element { --part-ink: #326dcc; }
-.element-body { --part-ink: #344b42; }
-.element-actuator { --part-ink: #167c74; --cylinder-fill: #cbe6dc; }
-.element-gas_spring { --part-ink: #805b96; --cylinder-fill: #e8deef; }
-.element-motor { --part-ink: #a06b35; }
-.drawing-element.selected, .drawing-element:focus-visible, .drawing-element:hover { --part-ink: #168569; }
+.drawing-element { --part-ink: light-dark(#326dcc, #8ac1ff); }
+.element-body { --part-ink: var(--ink); }
+.element-actuator { --part-ink: light-dark(#167c74, #5edbcb); --cylinder-fill: light-dark(#cbe6dc, #164842); }
+.element-gas_spring { --part-ink: light-dark(#805b96, #dbabff); --cylinder-fill: light-dark(#e8deef, #402c50); }
+.element-motor { --part-ink: light-dark(#a06b35, #ffc17f); }
+.drawing-element.selected, .drawing-element:focus-visible, .drawing-element:hover { --part-ink: var(--accent); }
+.drawing-element:hover .rod-stroke, .drawing-element:focus-visible .rod-stroke { stroke-width: 4.3; }
 .rod-stroke, .body-edge, .body-fill, .piston-rod, .piston-fitting, .piston-seal, .motor-link {
   stroke: var(--part-ink);
   stroke-linecap: round;
@@ -62,68 +63,68 @@ circle.drawing-hit { stroke-width: 1; }
 }
 .rod-stroke { stroke-width: 3.25; }
 .body-edge { stroke-width: 8; }
-.body-fill { stroke: #d4e3d9; stroke-width: 4.8; }
-.body-mass { fill: var(--part-ink); stroke: #f7f9f7; stroke-width: 1; pointer-events: none; }
+.body-fill { stroke: color-mix(in srgb, var(--ink) 22%, var(--surface)); stroke-width: 4.8; }
+.body-mass { fill: var(--part-ink); stroke: var(--canvas-bg); stroke-width: 1; pointer-events: none; }
 .piston-rod { stroke-width: 2.65; }
 .piston-fitting { stroke-width: 4; }
-.piston-cylinder, .piston-eye, .motor-case { fill: var(--cylinder-fill, #fff8e7); stroke: var(--part-ink); stroke-width: 1.9; }
+.piston-cylinder, .piston-eye, .motor-case { fill: var(--cylinder-fill, light-dark(#fff8e7, #483326)); stroke: var(--part-ink); stroke-width: 1.9; }
 .piston-eye, .motor-case { pointer-events: none; }
 .piston-seal { stroke-width: 1.45; opacity: .85; }
 .piston-limit { stroke: var(--part-ink); stroke-width: 1; opacity: .72; stroke-dasharray: 2 2; pointer-events: none; }
 .piston-limit-extended { stroke-dasharray: 4 2; }
-.piston-mount-reference { stroke: #a73c42; stroke-width: 1.7; stroke-dasharray: 2 5; pointer-events: none; }
-.piston-mount-indicator { fill: none; stroke: #a73c42; stroke-width: 1.6; stroke-dasharray: 3 2; pointer-events: none; }
-.piston-status-box { fill: #fff3f1; stroke: #c16d70; stroke-width: 1; }
-.piston-status-label { fill: #8d272c; font-size: 11px; font-weight: 650; pointer-events: none; }
-.drawing-element.piston-overload { --part-ink: #ad3439; --cylinder-fill: #ffe6e4; }
+.piston-mount-reference { stroke: light-dark(#a73c42, #ff9197); stroke-width: 1.7; stroke-dasharray: 2 5; pointer-events: none; }
+.piston-mount-indicator { fill: none; stroke: light-dark(#a73c42, #ff9197); stroke-width: 1.6; stroke-dasharray: 3 2; pointer-events: none; }
+.piston-status-box { fill: light-dark(#fff3f1, #452328); stroke: light-dark(#c16d70, #e28892); stroke-width: 1; }
+.piston-status-label { fill: light-dark(#8d272c, #ffc5c7); font-size: 11px; font-weight: 650; pointer-events: none; }
+.drawing-element.piston-overload { --part-ink: light-dark(#ad3439, #ff929b); --cylinder-fill: light-dark(#ffe6e4, #51272c); }
 .motor-link { stroke-width: 2.15; stroke-dasharray: 5 4; }
 .motor-arrow { fill: none; stroke: var(--part-ink); stroke-width: 1.1; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 .drawing-element.selected .rod-stroke { stroke-width: 4.8; }
 .drawing-element.selected .body-edge { stroke-width: 10; }
 .drawing-element.selected .piston-cylinder, .drawing-element.selected .motor-case { stroke-width: 2.75; }
 
-.force-arrow { stroke: #c8743e; stroke-width: 1.8; }
-.force-arrow-head, .force-label { fill: #a95b30; }
-.drawing-load { --force-ink: #a95b30; }
-.force-placeholder { fill: #f7f9f7; stroke: #b66d49; stroke-width: 1.25; }
+.force-arrow { stroke: light-dark(#c8743e, #ffac72); stroke-width: 1.8; }
+.force-arrow-head, .force-label { fill: light-dark(#a95b30, #ffb17b); }
+.drawing-load { --force-ink: light-dark(#a95b30, #ffb17b); }
+.force-placeholder { fill: var(--canvas-bg); stroke: light-dark(#b66d49, #ffb991); stroke-width: 1.25; }
 .load-disabled { opacity: .5; }
-.drawing-load.selected .force-arrow { stroke: #a64d1b; stroke-width: 2.65; }
-.drawing-load.selected .force-arrow-head, .drawing-load.selected .force-label { fill: #a64d1b; }
-.force-leader { stroke: var(--force-ink, #365eab); stroke-width: .9; stroke-dasharray: 2 2; opacity: .7; }
-.force-kind-gravity, .force-kind-applied { --force-ink: #946d1d; }
-.force-kind-member { --force-ink: #26734b; }
-.force-kind-piston { --force-ink: #75518e; }
-.force-kind-motor { --force-ink: #934674; }
-.force-kind-stroke, .force-kind-constraint { --force-ink: #177d73; }
-.force-kind-reaction { --force-ink: #365eab; }
-.force-kind-resultant { --force-ink: #4c596b; }
-.force-kind-assist { --force-ink: #11758a; }
-.result-force { fill: none; stroke: var(--force-ink, #365eab); stroke-width: 1.75; }
-.result-force-head, .result-force-label { fill: var(--force-ink, #365eab); }
+.drawing-load.selected .force-arrow { stroke: light-dark(#a64d1b, #ffcf90); stroke-width: 2.65; }
+.drawing-load.selected .force-arrow-head, .drawing-load.selected .force-label { fill: light-dark(#a64d1b, #ffcf90); }
+.force-leader { stroke: var(--force-ink, light-dark(#365eab, #8db9ff)); stroke-width: .9; stroke-dasharray: 2 2; opacity: .7; }
+.force-kind-gravity, .force-kind-applied { --force-ink: light-dark(#946d1d, #eec66c); }
+.force-kind-member { --force-ink: light-dark(#26734b, #82dba1); }
+.force-kind-piston { --force-ink: light-dark(#75518e, #d5a5f3); }
+.force-kind-motor { --force-ink: light-dark(#934674, #f09dcd); }
+.force-kind-stroke, .force-kind-constraint { --force-ink: light-dark(#177d73, #74d7cf); }
+.force-kind-reaction { --force-ink: light-dark(#365eab, #8db9ff); }
+.force-kind-resultant { --force-ink: light-dark(#4c596b, #c5cfdf); }
+.force-kind-assist { --force-ink: light-dark(#11758a, #66d7ec); }
+.result-force { fill: none; stroke: var(--force-ink, light-dark(#365eab, #8db9ff)); stroke-width: 1.75; }
+.result-force-head, .result-force-label { fill: var(--force-ink, light-dark(#365eab, #8db9ff)); }
 .force-kind-stroke .result-force, .force-kind-constraint .result-force { stroke-dasharray: 4 2; }
 .force-kind-resultant .result-force { stroke-width: 2.4; }
 .force-kind-assist .result-force { stroke-dasharray: 6 3; }
 
-.dimension-line, .dimension-extension { stroke: #899bca; stroke-width: 1; pointer-events: none; }
+.dimension-line, .dimension-extension { stroke: light-dark(#899bca, #98b1de); stroke-width: 1; pointer-events: none; }
 .dimension-extension { opacity: .55; }
-.dimension-box { fill: #fbfcff; stroke: #d8dff0; stroke-width: .8; }
-.dimension-label { fill: #5a70a7; font-size: 10.5px; font-weight: 550; pointer-events: none; }
-.drawing-dimension:is(:hover, :focus-visible, .selected) .dimension-box, .dimension-preview .dimension-box { fill: #e9eefc; stroke: #9badde; }
+.dimension-box { fill: var(--surface); stroke: light-dark(#d8dff0, #506380); stroke-width: .8; }
+.dimension-label { fill: light-dark(#5a70a7, #bbd4ff); font-size: 10.5px; font-weight: 550; pointer-events: none; }
+.drawing-dimension:is(:hover, :focus-visible, .selected) .dimension-box, .dimension-preview .dimension-box { fill: light-dark(#e9eefc, #293f61); stroke: light-dark(#9badde, #a3b9df); }
 .dimension-reference .dimension-line, .dimension-preview .dimension-line { stroke-dasharray: 4 3; }
-.constraint-box { fill: #f5f1f8; stroke: #d6cbe0; stroke-width: 1; }
-.constraint-label { fill: #795c90; font-size: 13px; pointer-events: none; }
-.drawing-constraint:is(:hover, :focus-visible, .selected) .constraint-box { stroke: #8b73a2; }
+.constraint-box { fill: light-dark(#f5f1f8, #30263d); stroke: light-dark(#d6cbe0, #736180); stroke-width: 1; }
+.constraint-label { fill: light-dark(#795c90, #d8b1ee); font-size: 13px; pointer-events: none; }
+.drawing-constraint:is(:hover, :focus-visible, .selected) .constraint-box { stroke: light-dark(#8b73a2, #ce9bf0); }
 
-.draft-anchor, .snap-ring { fill: #16856910; stroke: #168569; stroke-width: 1.25; }
-.draft-line { stroke: #168569; stroke-width: 1.8; stroke-dasharray: 5 4; }
+.draft-anchor, .snap-ring { fill: color-mix(in srgb, var(--accent) 12%, transparent); stroke: var(--accent); stroke-width: 1.25; }
+.draft-line { stroke: var(--accent); stroke-width: 1.8; stroke-dasharray: 5 4; }
 .snap-joint { stroke-width: 1.6; }
-.snap-cross { stroke: #168569; stroke-width: 1; }
-.snap-segment { fill: #fff; stroke: #168569; stroke-width: 1; }
-.joint-trace { fill: none; stroke: #89aba1; stroke-width: 1.15; stroke-dasharray: 3 3; opacity: .82; }
-.excursion-path { fill: none; stroke: #567ca5; stroke-width: 1.4; stroke-dasharray: 5 4; opacity: .64; }
-.excursion-featured { stroke-width: 2.25; stroke: #415997; opacity: .95; }
-.selection-box { fill: #3973c815; stroke: #3973c8; stroke-width: 1; }
-.selection-crossing { fill: #27926b15; stroke: #27926b; stroke-dasharray: 5 3; }
-.moment-arm, .moment-extension, .moment-corner { fill: none; stroke: #7a5d9b; stroke-width: 1.35; }
+.snap-cross { stroke: var(--accent); stroke-width: 1; }
+.snap-segment { fill: var(--surface); stroke: var(--accent); stroke-width: 1; }
+.joint-trace { fill: none; stroke: light-dark(#89aba1, #9cb9ce); stroke-width: 1.15; stroke-dasharray: 3 3; opacity: .82; }
+.excursion-path { fill: none; stroke: light-dark(#567ca5, #92c1ee); stroke-width: 1.4; stroke-dasharray: 5 4; opacity: .64; }
+.excursion-featured { stroke-width: 2.25; stroke: var(--accent); opacity: .95; }
+.selection-box { fill: light-dark(#3973c815, #679efd28); stroke: light-dark(#3973c8, #91bfff); stroke-width: 1; }
+.selection-crossing { fill: light-dark(#27926b15, #78d0a125); stroke: light-dark(#27926b, #77d5a2); stroke-dasharray: 5 3; }
+.moment-arm, .moment-extension, .moment-corner { fill: none; stroke: light-dark(#7a5d9b, #cda8ef); stroke-width: 1.35; }
 .moment-arm, .moment-extension { stroke-dasharray: 4 3; }
-.moment-label { fill: #664983; }
+.moment-label { fill: light-dark(#664983, #dcb9fa); }
