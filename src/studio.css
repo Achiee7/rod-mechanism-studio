@@ -422,6 +422,15 @@ button.danger { color: var(--danger); }
 #inspector .rm-field input[type=checkbox] { justify-self: end; margin-right: 4px; }
 #inspector .rm-field :is(input:not([type=checkbox]), select) { width: 100%; padding: 5px 6px; }
 #inspector .rm-field :disabled { opacity: .77; background: var(--panel); }
+#inspector .rm-piston-length + :is(.rm-piston-length, .rm-field) { margin-top: 8px; }
+#inspector .rm-field-hint {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+#inspector .rm-field-hint[data-fit=false] { color: var(--danger); }
 #inspector .rm-readout {
   display: flex;
   justify-content: space-between;
