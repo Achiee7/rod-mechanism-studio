@@ -19,7 +19,7 @@
   --press: color-mix(in srgb, var(--accent) 88%, var(--ink));
   --danger: #992f36;
   --warn: #80500b;
-  --force: #94451a;
+  --force: #b32835;
   --info: #345a9a;
   --gas: #735197;
   --actuator: #116f6e;
@@ -46,7 +46,7 @@
   --on-accent: #101722;
   --danger: #ffa2a7;
   --warn: #ffd08a;
-  --force: #ffb17f;
+  --force: #ff959d;
   --info: #a1c5ff;
   --gas: #d3b0fa;
   --actuator: #7ed6d2;
@@ -390,7 +390,7 @@ button.danger { color: var(--danger); }
   border-radius: 0;
   box-shadow: none;
 }
-.inspector-panel .panel-header { background: var(--panel); }
+.inspector-panel .panel-header { background: color-mix(in srgb, var(--panel) 80%, transparent); }
 .panel-actions { display: flex; align-items: center; gap: 3px; }
 .panel-actions [aria-pressed=true] { background: var(--active); color: var(--accent); }
 #inspector { padding: 13px 15px; min-width: 0; }
@@ -724,9 +724,9 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 3px; backg
 .main-menu button:not(:hover), .constraint-popup button:not(:hover) { background: transparent; }
 @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .main-menu, .constraint-popup, .visibility-options, #help-dialog,
-  .studio:not([data-mode-current=analysis]) .workspace:not(.inspector-docked) .inspector-panel,
+  .studio .workspace #inspector-panel,
   .command-ribbon.auto-hide .ribbon-body {
-    background: linear-gradient(145deg, color-mix(in srgb, var(--surface) 92%, transparent), color-mix(in srgb, var(--panel) 83%, transparent));
+    background: linear-gradient(145deg, color-mix(in srgb, var(--surface) 90%, transparent), color-mix(in srgb, var(--active) 77%, transparent));
     -webkit-backdrop-filter: blur(19px) saturate(145%);
     backdrop-filter: blur(19px) saturate(145%);
     box-shadow: inset 0 1px rgb(255 255 255 / 25%), 0 10px 32px var(--shadow);
@@ -734,6 +734,6 @@ kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 3px; backg
 }
 @media (prefers-reduced-transparency: reduce) {
   .main-menu, .constraint-popup, .visibility-options, #help-dialog,
-  .studio:not([data-mode-current=analysis]) .workspace:not(.inspector-docked) .inspector-panel,
+  .studio .workspace #inspector-panel,
   .command-ribbon.auto-hide .ribbon-body { background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none; }
 }

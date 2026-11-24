@@ -83,15 +83,16 @@ circle.drawing-hit { stroke-width: 1; }
 .drawing-element.selected .body-edge { stroke-width: 10; }
 .drawing-element.selected .piston-cylinder, .drawing-element.selected .motor-case { stroke-width: 2.75; }
 
-.force-arrow { stroke: light-dark(#c8743e, #ffac72); stroke-width: 1.8; }
-.force-arrow-head, .force-label { fill: light-dark(#a95b30, #ffb17b); }
-.drawing-load { --force-ink: light-dark(#a95b30, #ffb17b); }
-.force-placeholder { fill: var(--canvas-bg); stroke: light-dark(#b66d49, #ffb991); stroke-width: 1.25; }
+.force-arrow { stroke: var(--force); stroke-width: 1.8; }
+.force-arrow-head, .force-label { fill: var(--force); }
+.drawing-load { --force-ink: var(--force); }
+.force-placeholder { fill: var(--canvas-bg); stroke: var(--force); stroke-width: 1.25; }
 .load-disabled { opacity: .5; }
-.drawing-load.selected .force-arrow { stroke: light-dark(#a64d1b, #ffcf90); stroke-width: 2.65; }
-.drawing-load.selected .force-arrow-head, .drawing-load.selected .force-label { fill: light-dark(#a64d1b, #ffcf90); }
+.drawing-load.selected .force-arrow { stroke: var(--force); stroke-width: 2.65; }
+.drawing-load.selected .force-arrow-head, .drawing-load.selected .force-label { fill: var(--force); }
 .force-leader { stroke: var(--force-ink, light-dark(#365eab, #8db9ff)); stroke-width: .9; stroke-dasharray: 2 2; opacity: .7; }
-.force-kind-gravity, .force-kind-applied { --force-ink: light-dark(#946d1d, #eec66c); }
+.force-kind-applied { --force-ink: var(--force); }
+.force-kind-gravity { --force-ink: light-dark(#946d1d, #eec66c); }
 .force-kind-member { --force-ink: light-dark(#26734b, #82dba1); }
 .force-kind-piston { --force-ink: light-dark(#75518e, #d5a5f3); }
 .force-kind-motor { --force-ink: light-dark(#934674, #f09dcd); }

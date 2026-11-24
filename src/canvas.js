@@ -353,6 +353,15 @@ export function createCanvas(host, handlers = {}) {
       }
     }
     const report = state.pistonLoads instanceof Map ? state.pistonLoads.get(element.id) : state.pistonLoads?.[element.id];
+    if (Number.isFinite(report?.ratedMargin) && Math.abs(report.availableForce) > 0) {
+      const ratio = Math.max(0, 1 - report.ratedMargin / Math.abs(report.availableForce));
+      const fraction = Math.min(1, ratio);
+      const low = fraction < 0.5 ? 'var(--ok)' : 'var(--warn)';
+      const high = fraction < 0.5 ? 'var(--warn)' : 'var(--danger)';
+      const blend = fraction < 0.5 ? 2 * fraction : 2 * fraction - 1;
+      body.style.fill = `color-mix(in srgb, ${high} ${100 * blend}%, ${low})`;
+      svg('title', {}, body).textContent = `Demand in rated direction: ${Math.round(100 * ratio)}% of available piston force`;
+    }
     const shortfall = pistonShortfallLabel(report);
     if (shortfall) {
       parent.classList.add('piston-overload');
