@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Sketch, simulate, and size planar rod mechanisms in your browser.">
-  <meta name="theme-color" content="#28664f">
+  <meta name="theme-color" content="#ffffff">
+  <script src="./src/appearance.js"></script>
   <title>Rod Mechanism Studio</title>
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <link rel="stylesheet" href="./src/studio.css">
@@ -32,6 +33,16 @@
       <button type="button" data-action="example" data-icon="mechanism">Load example</button>
       <button type="button" data-action="restore-saved" data-icon="reset">Restore saved design</button>
       <button type="button" data-action="help" data-icon="help">Help &amp; shortcuts</button>
+      <fieldset class="appearance-settings">
+        <legend>Appearance</legend>
+        <label>Theme <select id="appearance-theme">
+          <option value="blue">Blueprint</option><option value="violet">Violet</option>
+          <option value="teal">Teal</option><option value="amber">Amber</option><option value="slate">Slate</option>
+        </select></label>
+        <label>Mode <select id="appearance-mode">
+          <option value="system">Match system</option><option value="light">Light</option><option value="dark">Dark</option>
+        </select></label>
+      </fieldset>
     </nav>
     <input id="project-file" type="file" accept=".json,application/json" hidden>
   </header>
