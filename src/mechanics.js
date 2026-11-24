@@ -34,6 +34,13 @@ function stroke(element, length) {
   return [min, Math.max(min, element.maxLength ?? length)];
 }
 
+function forcedStroke(element, length) {
+  const [min, max] = stroke(element, length);
+  const lower = clamp(element.forcedMinLength ?? min, min, max);
+  const upper = clamp(element.forcedMaxLength ?? max, lower, max);
+  return [lower, upper];
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -1284,12 +1291,17 @@ export class Simulation {
     this.motionMessage = "";
     if (this.hinge) this.hinge.speed = 0;
     for (const joint of this.model?.joints ?? []) joint.vx = joint.vy = 0;
-    if (this.members) this.refreshForces(mode === "real" && this.validity.valid);
+    if (this.members) {
+      this.validity = this.inspectPose();
+      this.refreshForces(mode === "real" && this.validity.valid);
+    }
     this.resetForcedTravel();
   }
 
   resetForcedTravel() {
     this.forcedReversed = false;
+    this.forcedPriorPose = null;
+    this.lastForcedReversal = null;
     for (const { element } of this.pistons ?? []) {
       if (this.physicsMode === "forced") element.commandMode = element.forceMode;
       else delete element.commandMode;
@@ -1307,7 +1319,15 @@ export class Simulation {
       element.commandMode = oppositePistonMode(element.commandMode);
       element.driveState = this.validity.valid ? "forced" : "blocked";
     }
+    this.recordForcedReversal("manual", this.pistons);
     return this.forcedReversed;
+  }
+
+  recordForcedReversal(reason, members) {
+    this.lastForcedReversal = {
+      reason,
+      commands: members.map(({ element }) => ({ id: element.id, mode: element.commandMode })),
+    };
   }
 
   reset() {
@@ -1339,6 +1359,16 @@ export class Simulation {
 
   inspectPose() {
     const validity = poseValidity(this.model, { constraints: this.constraints, rigidTolerance: 1e-5 });
+    if (this.physicsMode === "forced") {
+      for (const { element } of this.pistons) {
+        const piston = validity.pistons[element.id];
+        const { length, minLength, maxLength } = piston;
+        const [min, max] = forcedStroke(element, length);
+        const atMin = min > minLength && Math.abs(length - min) <= 1e-6;
+        const atMax = max < maxLength && Math.abs(length - max) <= 1e-6;
+        piston.forcedStop = atMin && atMax ? "both" : atMin ? "min" : atMax ? "max" : null;
+      }
+    }
     for (const element of this.missingPistons) {
       validity.issues.push({
         code: "geometry", element: element.id,
@@ -1409,24 +1439,24 @@ export class Simulation {
     }
   }
 
-  hingeCandidate(angle) {
+  hingeCandidate(angle, forcedLimits) {
     this.placeHinge(angle);
     for (const piston of this.pistons) {
       const { a, b, element } = piston;
       const { length } = axis(a, b);
-      const [min, max] = stroke(element, length);
+      const [min, max] = forcedLimits?.get(piston) ?? stroke(element, length);
       if (length < min - HINGE_STROKE_TOLERANCE || length > max + HINGE_STROKE_TOLERANCE) return piston;
     }
     return null;
   }
 
-  moveHinge(target) {
+  moveHinge(target, forcedLimits) {
     const start = this.hinge.angle;
     const steps = Math.max(1, Math.ceil(Math.abs(target - start) / 0.025));
     let last = start;
     for (let index = 1; index <= steps; index++) {
       const candidate = start + (target - start) * index / steps;
-      const stop = this.hingeCandidate(candidate);
+      const stop = this.hingeCandidate(candidate, forcedLimits);
       if (!stop) {
         last = candidate;
         continue;
@@ -1434,7 +1464,7 @@ export class Simulation {
       let outside = candidate;
       for (let iteration = 0; iteration < 32; iteration++) {
         const midpoint = (last + outside) / 2;
-        if (this.hingeCandidate(midpoint)) outside = midpoint;
+        if (this.hingeCandidate(midpoint, forcedLimits)) outside = midpoint;
         else last = midpoint;
       }
       this.placeHinge(last);
@@ -1575,6 +1605,7 @@ export class Simulation {
       return this.result(false);
     }
     this.validity = validity;
+    this.forcedPriorPose = null;
     if (this.hinge) this.hinge.speed = 0;
     for (const item of this.model.joints) item.vx = item.vy = 0;
     this.refreshForces(this.physicsMode === "real");
@@ -1731,57 +1762,42 @@ export class Simulation {
       this.integrate(dt);
       return true;
     }
-    this.reversePistons("commandMode");
-    const commands = this.pistons.map(member => {
+    const commandsAtPose = () => this.pistons.map(member => {
       const { element, a, b } = member;
       const direction = axis(a, b);
-      const [min, max] = stroke(element, direction.length);
+      const [installedMin, installedMax] = stroke(element, direction.length);
+      const [min, max] = forcedStroke(element, direction.length);
       const sign = element.commandMode === "pull" ? -1 : 1;
-      const distance = Math.min(0.35, (max - min) * 1.15) * dt;
-      const requested = clamp(direction.length + sign * distance, min, max);
-      return { member, direction, sign, requested, active: Math.abs(requested - direction.length) > 1e-7 };
+      const limit = sign > 0 ? max : min;
+      const custom = sign > 0 ? max < installedMax : min > installedMin;
+      const remaining = sign * (limit - direction.length);
+      const distance = Math.min(0.35, (installedMax - installedMin) * 1.15) * dt;
+      const requested = direction.length + sign * clamp(remaining, 0, distance);
+      const active = Math.abs(requested - direction.length) > EPSILON;
+      return { member, direction, sign, requested, active, custom, limit, min, max };
     });
-    const active = commands.filter(command => command.active);
+    let commands = commandsAtPose();
+    const returning = commands.filter(({ active, member: { element }, min, max }) => !active && element.autoReturn && max > min + EPSILON);
+    if (returning.length) {
+      for (const { member: { element } } of returning) element.commandMode = oppositePistonMode(element.commandMode);
+      this.recordForcedReversal(returning.some(command => command.custom) ? "forced-stop" : "stroke-stop", returning.map(command => command.member));
+      commands = commandsAtPose();
+    }
     const start = this.snapshot();
     this.refreshForces(false);
-    for (const { member, active: moving } of commands) member.element.driveState = moving ? "forced" : "stroke-stop";
-    if (!active.length) {
-      this.motionMessage = "The commanded piston stroke limit is reached.";
-      for (const joint of this.model.joints) joint.vx = joint.vy = 0;
-      if (this.hinge) this.hinge.speed = 0;
-      return false;
-    }
-    let success = false;
-    const respectsCommands = () => commands.every(({ member, direction, sign, active: moving }) => {
-      const progress = sign * (axis(member.a, member.b).length - direction.length);
-      return moving ? progress >= -1e-6 : Math.abs(progress) <= 1e-6;
-    });
-    const recorded = this.snapshot();
-    if (this.hinge) {
-      const { pivot, angle } = this.hinge;
-      const hingeCommands = active.map(({ member: { a, b }, direction, requested }) => {
-        const arm = (isFixed(b) ? 0 : torqueAt(b, pivot, direction.x, direction.y))
-          - (isFixed(a) ? 0 : torqueAt(a, pivot, direction.x, direction.y));
-        return Math.abs(arm) < 1e-7 ? null : (requested - direction.length) / arm;
-      });
-      if (hingeCommands.every(Number.isFinite)
-        && hingeCommands.every(value => Math.sign(value) === Math.sign(hingeCommands[0]))) {
-        const advance = Math.sign(hingeCommands[0]) * Math.min(0.1, ...hingeCommands.map(Math.abs));
-        this.moveHinge(angle + advance);
-        success = Math.abs(this.hinge.angle - angle) > 1e-7 && respectsCommands() && this.inspectPose().valid;
-      }
-    } else {
-      function requests(entries) {
-        return new Map(entries.map(({ member, requested }) => [member, requested]));
-      }
-      const plans = [requests(active)];
-      if (active.length > 1) for (const command of active) plans.push(requests([command]));
-      for (const plan of plans) {
-        this.restore(recorded);
-        this.solvePositions(Math.max(144, this.model.options.iterations), dt, undefined, false, plan);
-        success = respectsCommands() && this.inspectPose().valid && [...plan].every(([member, length]) =>
-          Math.abs(axis(member.a, member.b).length - length) <= 2e-6);
-        if (success) break;
+    let success = this.tryForcedMove(commands, dt);
+    if (!success) {
+      const active = commands.filter(command => command.active);
+      const geometricReturn = active.filter(command => command.member.element.autoReturn
+        && (active.length === 1 || this.wasMovingInCommand(command)));
+      if (geometricReturn.length) {
+        for (const { member: { element } } of geometricReturn) element.commandMode = oppositePistonMode(element.commandMode);
+        const reversed = commandsAtPose();
+        success = this.tryForcedMove(reversed, dt, true);
+        if (success) {
+          commands = reversed;
+          this.recordForcedReversal("geometry", geometricReturn.map(command => command.member));
+        }
       }
     }
     if (!success) {
@@ -1789,22 +1805,172 @@ export class Simulation {
       for (const { member, active: moving } of commands) member.element.driveState = moving ? "blocked" : "stroke-stop";
       for (const joint of this.model.joints) joint.vx = joint.vy = 0;
       if (this.hinge) this.hinge.speed = 0;
-      this.motionMessage = "The linkage, piston directions, or another stroke stop blocks the commanded movement.";
+      this.motionMessage = commands.some(command => command.active)
+        ? "The linkage, piston directions, or another stroke stop blocks the commanded movement."
+        : commands.some(command => command.custom) ? "The commanded forced travel limit is reached."
+          : "The commanded piston stroke limit is reached.";
       return false;
     }
+    this.forcedPriorPose = start;
     for (const [index, joint] of this.model.joints.entries()) {
       const prior = start.joints[index];
       joint.vx = (joint.x - prior.x) / dt;
       joint.vy = (joint.y - prior.y) / dt;
     }
-    for (const { member, sign } of commands) {
+    for (const { member, limit } of commands) {
       const { element, a, b } = member;
       const { length } = axis(a, b);
-      const [min, max] = stroke(element, length);
-      const limit = sign > 0 ? max : min;
-      if (Math.abs(length - limit) <= 1e-6 && !element.autoReturn) element.driveState = "stroke-stop";
+      element.driveState = Math.abs(length - limit) <= 1e-6 && !element.autoReturn ? "stroke-stop" : "forced";
     }
     return true;
+  }
+
+  wasMovingInCommand({ member: { a, b }, direction, sign }) {
+    if (!this.forcedPriorPose) return false;
+    const priorA = this.forcedPriorPose.joints[this.model.joints.indexOf(a)];
+    const priorB = this.forcedPriorPose.joints[this.model.joints.indexOf(b)];
+    return sign * (direction.length - axis(priorA, priorB).length) > EPSILON;
+  }
+
+  tryForcedMove(commands, dt, returning = false) {
+    const active = commands.filter(command => command.active);
+    if (!active.length) return false;
+    const start = this.snapshot();
+    const limits = new Map(commands.map(({ member, direction, min, max }) => [member,
+      [Math.min(min, direction.length), Math.max(max, direction.length)]]));
+    const acceptable = () => {
+      const progress = commands.map(({ member, direction, sign }) => sign * (axis(member.a, member.b).length - direction.length));
+      return progress.some((value, index) => commands[index].active && value > EPSILON)
+        && progress.every((value, index) => commands[index].active ? value >= -2e-7 : Math.abs(value) <= 2e-7)
+        && [...limits].every(([{ a, b }, [min, max]]) => {
+          const { length } = axis(a, b);
+          return length >= min - 2e-8 && length <= max + 2e-8;
+        })
+        && this.inspectPose().valid;
+    };
+    if (this.hinge) {
+      const { angle } = this.hinge;
+      const previous = this.forcedPriorPose?.hinge?.angle;
+      const preferred = Math.sign((previous ?? angle) - angle) || 1;
+      for (const sign of [preferred, -preferred]) {
+        const travel = Math.min(...active.map(command => this.hingeCommandTravel(command, sign)));
+        if (!travel) continue;
+        this.moveHinge(angle + sign * travel, limits);
+        if (acceptable()) return true;
+        this.restore(start);
+      }
+      return false;
+    }
+
+    const plans = active.length === 1 ? [active] : [active, ...active.map(command => [command])];
+    const tryPlan = (plan, fraction, seed) => {
+      this.restore(start);
+      if (seed) this.model.joints.forEach((joint, index) => {
+        joint.x = seed.joints[index].x;
+        joint.y = seed.joints[index].y;
+      });
+      const targets = new Map(plan.map(({ member, requested, direction }) => [member,
+        direction.length + (requested - direction.length) * fraction]));
+      const initial = this.snapshot();
+      this.solvePositions(Math.max(192, this.model.options.iterations), dt, undefined, false, targets, limits);
+      const matches = () => acceptable() && this.maxConstraintError() <= 2e-8
+        && [...targets].every(([member, length]) => Math.abs(axis(member.a, member.b).length - length) <= 2e-8);
+      if (matches()) return true;
+      this.restore(initial);
+      return this.refineForcedPose(targets, limits, matches);
+    };
+    const reversal = returning || active.some(({ member }) => {
+      const prior = this.forcedPriorPose?.elements[this.members.indexOf(member)];
+      return prior && prior.commandMode !== member.element.commandMode;
+    });
+    const seed = reversal ? this.forcedPriorPose : null;
+    for (const plan of plans) if (tryPlan(plan, 1, seed)) return true;
+    // A full axial increment may overshoot a linkage extremum. Accept a shorter
+    // increment before giving up the current command direction.
+    for (let fraction = 0.5; fraction >= 1 / 2048; fraction /= 2) {
+      if (tryPlan(active, fraction, seed)) return true;
+    }
+    if (!this.forcedPriorPose) {
+      // A perfectly aligned initial sketch may have a zero axial derivative in
+      // every direction of motion. Probe nearby configurations before stopping.
+      const probe = this.snapshot();
+      for (const [index, joint] of this.model.joints.entries()) {
+        if (isFixed(joint)) continue;
+        for (const coordinate of ["x", "y"]) {
+          probe.joints = start.joints.map(item => ({ ...item }));
+          probe.joints[index][coordinate] += 0.001;
+          if (tryPlan(active, 1, probe)) return true;
+        }
+      }
+    }
+    this.restore(start);
+    return false;
+  }
+
+  refineForcedPose(targets, limits, matches) {
+    const free = this.model.joints.filter(joint => !isFixed(joint));
+    const offsets = new Map(free.map((joint, index) => [joint.id, index * 2]));
+    const equations = () => {
+      const goals = [...this.constraints.map(member => [member, member.length]), ...targets];
+      for (const [member, [min, max]] of limits) {
+        const { length } = axis(member.a, member.b);
+        if (length < min || length > max) goals.push([member, clamp(length, min, max)]);
+      }
+      return goals;
+    };
+    const errors = goals => goals.map(([{ a, b }, length]) => length - axis(a, b).length);
+    for (let i = 0; i < 26; i++) {
+      const goals = equations();
+      const residuals = errors(goals);
+      const score = vectorDot(residuals, residuals);
+      if (score <= 1e-18) return matches();
+      const rows = constraintsMatrix(goals.map(([member]) => member), offsets);
+      const system = rows.map((row, index) => [
+        ...rows.map((other, column) => vectorDot(row, other) + (index === column ? 1e-12 : 0)),
+        residuals[index],
+      ]);
+      const { matrix, columns } = reduceRows(system, rows.length, 1e-14);
+      const corrections = Array(free.length * 2).fill(0);
+      columns.forEach((column, row) => rows[column].forEach((value, index) => { corrections[index] += value * matrix[row].at(-1); }));
+      const previous = free.map(({ x, y }) => ({ x, y }));
+      let advanced = false;
+      const largest = corrections.reduce((value, correction) => Math.max(value, Math.abs(correction)), 0);
+      for (let scale = Math.min(1, 0.05 / largest); scale >= 1 / 256; scale /= 2) {
+        free.forEach((joint, index) => {
+          joint.x = previous[index].x + scale * corrections[2 * index];
+          joint.y = previous[index].y + scale * corrections[2 * index + 1];
+        });
+        const next = errors(equations());
+        if (vectorDot(next, next) < score) { advanced = true; break; }
+      }
+      if (!advanced) return false;
+    }
+    return matches();
+  }
+
+  hingeCommandTravel({ member: { a, b }, direction, requested, sign }, turn) {
+    if (isFixed(a) === isFixed(b)) return 0;
+    const { pivot } = this.hinge;
+    const moving = isFixed(a) ? b : a;
+    const anchor = isFixed(a) ? a : b;
+    const movingRadius = Math.hypot(moving.x - pivot.x, moving.y - pivot.y);
+    const anchorRadius = Math.hypot(anchor.x - pivot.x, anchor.y - pivot.y);
+    const phase = Math.atan2(moving.y - pivot.y, moving.x - pivot.x) - Math.atan2(anchor.y - pivot.y, anchor.x - pivot.x);
+    const offset = ((phase % Math.PI) + Math.PI) % Math.PI;
+    const atTurn = offset < 1e-10 || Math.PI - offset < 1e-10;
+    const toTurn = atTurn ? Math.PI : turn > 0 ? Math.PI - offset : offset;
+    const lengthAt = advance => Math.hypot(movingRadius - anchorRadius,
+      2 * Math.sqrt(movingRadius * anchorRadius) * Math.sin((phase + turn * advance) / 2));
+    let low = 0;
+    let high = Math.min(0.1, toTurn);
+    if (sign * (lengthAt(high) - direction.length) <= EPSILON) return 0;
+    if (sign * (lengthAt(high) - requested) <= 0) return high;
+    for (let i = 0; i < 28; i++) {
+      const middle = (low + high) / 2;
+      if (sign * (lengthAt(middle) - requested) > 0) high = middle;
+      else low = middle;
+    }
+    return (low + high) / 2;
   }
 
   clampPistonVelocities(dt, atStop = false) {
@@ -1845,10 +2011,11 @@ export class Simulation {
     }
   }
 
-  solvePositions(iterations, dt, preferredId, readForces = false, targets = new Map()) {
-    const project = ({ element, a, b, length }, limited = false, forcedLength) => {
+  solvePositions(iterations, dt, preferredId, readForces = false, targets = new Map(), forcedLimits) {
+    const project = (member, limited = false, forcedLength) => {
+      const { element, a, b, length } = member;
       const direction = axis(a, b);
-      const target = forcedLength ?? (limited ? clamp(direction.length, ...stroke(element, direction.length)) : length);
+      const target = forcedLength ?? (limited ? clamp(direction.length, ...(forcedLimits?.get(member) ?? stroke(element, direction.length))) : length);
       const error = direction.length - target;
       if (Math.abs(error) <= EPSILON) return Math.abs(error);
       const wa = this.inverseMasses.get(a.id) * (a.id === preferredId ? 0.02 : 1);

@@ -26,6 +26,8 @@ Build a browser studio for analyzing feasible 2D linkage paths, the forces they 
 
 - Limited gas spring and actuator stroke settings to hundredths of a millimetre. Rounded existing project limits with the mounting gap in mind and kept joint coordinates at solver precision.
 
+- Added Forced motion auto-return at linkage turning points and optional pin-to-pin travel stops for hatch or lid contact. Real physics still uses installed stroke and forces.
+
 ## Scope for later
 
 - The earlier Frame Studio project also had 3D and team collaboration. This studio targets standalone 2D mechanism work.
