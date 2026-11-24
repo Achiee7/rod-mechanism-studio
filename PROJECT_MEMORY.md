@@ -24,6 +24,8 @@ Build a browser studio for analyzing feasible 2D linkage paths, the forces they 
 
 - 2026-11-24 · Added reciprocal piston-length hints for the current mounting position and single-stage barrel. Both lengths remain independently editable.
 
+- Limited gas spring and actuator stroke settings to hundredths of a millimetre. Rounded existing project limits with the mounting gap in mind and kept joint coordinates at solver precision.
+
 ## Scope for later
 
 - The earlier Frame Studio project also had 3D and team collaboration. This studio targets standalone 2D mechanism work.
