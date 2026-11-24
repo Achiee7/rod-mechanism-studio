@@ -69,6 +69,37 @@ test("legacy JSON preserves the direction of loads, torque and the visible place
   assert.deepEqual(normalizeMechanism(model), model);
 });
 
+test("older piston limits round to hundredths of a millimetre while preserving installed fit", () => {
+  const extendedMount = 0.25000097804102295;
+  const compressedMount = 0.25000902195897705;
+  const linkLength = 1.123456789;
+  const model = normalizeMechanism({
+    joints: [
+      point(0, 0, 0, "origin"), point(1, 0, 0, "fixed"), point(2, extendedMount, 0),
+      point(3, 0, linkLength), point(4, 0, compressedMount),
+    ],
+    elements: [
+      { id: 1, a: 1, b: 2, kind: "gas_spring", min_length: 0.16250063572666493, max_length: extendedMount },
+      { id: 2, a: 1, b: 3, kind: "rod", length: linkLength, minLength: linkLength, maxLength: linkLength },
+      { id: 3, a: 1, b: 4, kind: "actuator", min_length: compressedMount, max_length: 0.399996 },
+    ],
+    dimensions: [{ id: 1, a: 1, b: 3, kind: "distance", value: linkLength, driving: true }],
+  });
+  const [spring, rod, actuator] = model.elements;
+  assert.equal(spring.minLength, 0.1625);
+  assert.equal(spring.maxLength, 0.25001);
+  assert.equal(actuator.minLength, 0.25);
+  assert.equal(actuator.maxLength, 0.4);
+  assert.equal(distance(model, 1, 2), extendedMount);
+  assert.equal(distance(model, 1, 4), compressedMount);
+  assert.equal(poseValidity(model).valid, true);
+  assert.equal(rod.length, linkLength);
+  assert.equal(rod.minLength, linkLength);
+  assert.equal(rod.maxLength, linkLength);
+  assert.equal(model.dimensions[0].value, linkLength);
+  assert.deepEqual(normalizeMechanism(model), model);
+});
+
 test("a sketch origin can drive a real hinge and does not act as a simulation support", () => {
   const model = normalizeMechanism({
     joints: [point(0, 0, 0, "origin"), point(1, 0, 0), point(2, 0.2, 1, "fixed"), point(3, 0, 0, "pin")],
@@ -330,7 +361,10 @@ test("redundant internal force distributions are flagged as estimates", () => {
   assert.equal(report.indeterminate, true);
   assert.equal(report.elements[1].estimated, true);
   close(report.elements[1].axialForce + report.elements[2].axialForce, 100);
-  const hatch = currentForces(createDemo());
+  const simulation = new Simulation(createDemo(), { physicsMode: "forced" });
+  const tip = simulation.model.joints.find(joint => joint.id === 2);
+  assert.equal(simulation.poseJoint(tip.id, tip.x, tip.y + 0.01).clamped, true);
+  const hatch = currentForces(simulation.model, { physicsMode: "forced" });
   assert.equal(hatch.elements[2].estimated, true);
   assert.ok(hatch.arrows.some(arrow => arrow.constraint && arrow.estimated));
 });
@@ -470,6 +504,9 @@ test("forced return leaves the hatch spring rated for push and reports the neede
   const model = createDemo();
   const simulation = new Simulation(model, { physicsMode: "forced" });
   const spring = simulation.model.elements[2];
+  const tip = simulation.model.joints.find(joint => joint.id === 2);
+  assert.equal(simulation.poseJoint(tip.id, tip.x, tip.y + 0.01).clamped, true);
+  close(distance(simulation.model, spring.a, spring.b), spring.maxLength, 1e-7);
   assert.equal(simulation.step().accepted, false);
   assert.equal(simulation.reverseForcedTravel(), true);
   assert.equal(simulation.forcedReversed, true);
@@ -478,8 +515,8 @@ test("forced return leaves the hatch spring rated for push and reports the neede
   assert.equal(report.commandMode, "pull");
   assert.equal(report.ratedForce, 420);
   assert.equal(report.commandAvailableForce, 0);
-  close(report.requiredForce, 324.587358875402);
-  close(report.commandRequiredForce, -95.412641124598);
+  close(report.requiredForce, 324.58736, 1e-3);
+  close(report.commandRequiredForce, -95.41264, 1e-3);
   assert.equal(report.commandAssessment, "externally-driven");
   assert.equal(report.overload, true);
   assert.equal(report.ratedOverload, false);
@@ -553,7 +590,7 @@ test("the short-stroke pull spring lowers the hatch and forced return reports th
   close(initial.handleBalance.extra, 249.539717570);
 
   travelToStop(-1, spring.minLength);
-  close(tip.y, -0.08753198, 1e-7);
+  close(tip.y, -0.08753198, 1.1e-5);
   assert.equal(report().pistons[2].atStop, "min");
   assert.equal(report().pistons[2].commandShortfall, 0);
 
@@ -571,7 +608,7 @@ test("the short-stroke pull spring lowers the hatch and forced return reports th
   travelToStop(1, spring.maxLength);
   assert.equal(report().pistons[2].atStop, "max");
   assert.equal(report().handleBalance.stopSupported, false);
-  close(tip.y, 0, 1e-7);
+  close(tip.y, 0, 1.1e-5);
   close(report().pistons[2].signedCommandShortfall, 249.540694, 1e-4);
   assert.equal(model.elements[1].forceMode, "pull");
 });
