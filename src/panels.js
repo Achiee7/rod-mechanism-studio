@@ -1,6 +1,6 @@
 import { balanceForce, assistForce, distance, isPiston, sketchDriven } from './mechanics.js';
 import { pathChart } from './path-chart.js';
-import { pistonGeometry, pistonLengthRanges } from './piston-physics.js';
+import { pistonGeometry, pistonLengthRanges, roundPistonLength } from './piston-physics.js';
 
 export const collections = {joint:'joints', element:'elements', load:'loads', dimension:'dimensions', constraint:'constraints'};
 export const kindName = kind => ({
@@ -22,7 +22,7 @@ function h(tag, text, className) {
 }
 const fmt = (n, digits=1) => Number.isFinite(n) ? n.toLocaleString('nl-NL', {maximumFractionDigits:digits}) : '—';
 const metric = (n,u,digits=1) => fmt(n,digits) + ' ' + u;
-const millimeters = value => metric(value * 1000,'mm');
+const millimeters = value => metric(value * 1000,'mm',2);
 const signed = value => Number.isFinite(value) ? (value > 0 ? '+' : '') + metric(value,'N') : 'Unavailable';
 const direction = value => value > 0 ? 'Push / extend' : value < 0 ? 'Pull / retract' : 'Zero';
 export const strokeStopLabel = stop => ({min:'Compressed stop',max:'Extended stop',both:'Locked stroke'})[stop];
@@ -59,7 +59,7 @@ function field(title, key, value, config={}) {
     if (input.type==='checkbox') input.checked=!!value;
     else if(input.type==='number') {
       input.step=config.step || 'any';
-      input.value=Number.isFinite(value) ? Number(value.toFixed(6)) : '';
+      input.value=Number.isFinite(value) ? Number(value.toFixed(config.decimals ?? 6)) : '';
       if(config.min!=null) input.min=config.min;
       if(config.max!=null) input.max=config.max;
     } else input.value=value || '';
@@ -70,20 +70,18 @@ function field(title, key, value, config={}) {
   return wrap;
 }
 function pistonRangeText([minimum, maximum]) {
-  const minimumMm = minimum * 1000, maximumMm = maximum * 1000;
-  for (const digits of [2, 6]) {
-    const scale = 10 ** digits;
-    const low = Math.ceil(minimumMm * scale) / scale;
-    const high = Math.floor(maximumMm * scale) / scale;
-    if (low <= high) return low === high ? metric(low,'mm',digits) : fmt(low,digits) + '–' + metric(high,'mm',digits);
-  }
-  return minimumMm === maximumMm ? metric(minimumMm,'mm',20) : fmt(minimumMm,20) + '–' + metric(maximumMm,'mm',20);
+  const low = roundPistonLength(minimum,'ceil');
+  const high = roundPistonLength(maximum,'floor');
+  if (low > high) return null;
+  return low === high ? millimeters(low) : fmt(low * 1000,2) + '–' + millimeters(high);
 }
-function pistonLengthFields(part, mountingLength) {
+function pistonLengthFields(part, mountingLength, editable) {
   const makeField = (title,key) => {
-    const group = h('div',null,'rm-piston-length');
-    const label = field(title,key,part[key]*1000,{min:1});
+    const label = field(title,key,roundPistonLength(part[key])*1000,{min:1,step:.01,decimals:2,disabled:!editable});
     const input = label.querySelector('input');
+    input.inputMode = 'decimal';
+    if (!editable) return {group:label};
+    const group = h('div',null,'rm-piston-length');
     const help = h('div',null,'rm-field-hint');
     help.id = 'piston-length-range-' + key;
     help.setAttribute('aria-live','polite');
@@ -93,18 +91,19 @@ function pistonLengthFields(part, mountingLength) {
   };
   const min = makeField('Compressed (mm)','minLength');
   const max = makeField('Extended (mm)','maxLength');
+  if (!editable) return [min.group,max.group];
   const refresh = () => {
-    const compressed = min.input.valueAsNumber / 1000;
-    const extended = max.input.valueAsNumber / 1000;
+    const compressed = roundPistonLength(min.input.valueAsNumber / 1000);
+    const extended = roundPistonLength(max.input.valueAsNumber / 1000);
     const ranges = pistonLengthRanges(compressed,extended,mountingLength);
     const update = (help,range,otherLength,otherName) => {
       const validOpposite = otherLength >= 0.001;
-      const fits = validOpposite && Boolean(range);
+      const rangeText = validOpposite && range && pistonRangeText(range);
       const message = !validOpposite ? 'Enter at least 1 mm for the ' + otherName + ' length.'
-        : fits ? 'Fits this mount · ' + pistonRangeText(range)
-          : 'No fit here. Change the ' + otherName + ' length or the mounting points.';
+        : rangeText ? 'Fits this mount · ' + rangeText
+          : 'No 0.01 mm increment fits. Change the ' + otherName + ' length or the mounting points.';
       if (help.textContent !== message) help.textContent = message;
-      help.dataset.fit = String(fits);
+      help.dataset.fit = String(Boolean(rangeText));
     };
     update(min.help,ranges.compressed,extended,'extended');
     update(max.help,ranges.extended,compressed,'compressed');
@@ -612,9 +611,9 @@ function pathSizing(path, part, editable) {
   const hand = path?.assistForceRanges?.[id];
   const mixed = recommendation?.mode === 'both' || finitePair(forces) && forces[0] < -1e-6 && forces[1] > 1e-6;
   const usableForce = Number.isFinite(recommendation?.signedForce) && !mixed && recommendation.status === 'ok';
-  const lower = recommendation?.minLength;
-  const upper = recommendation?.maxLength;
-  const lengthRecommendation = Number.isFinite(lower) && Number.isFinite(upper) && upper >= lower && lower > 0;
+  const lower = roundPistonLength(recommendation?.minLength,'floor');
+  const upper = roundPistonLength(recommendation?.maxLength,'ceil');
+  const lengthRecommendation = Number.isFinite(lower) && Number.isFinite(upper) && upper >= lower && lower >= .001;
   const candidate = lengthRecommendation
     ? pistonGeometry({...part,minLength:lower,maxLength:upper},(lower+upper)/2)
     : null;
@@ -659,7 +658,7 @@ function pathSizing(path, part, editable) {
     apply.dataset.id = id;
     out.push(apply);
   }
-  if (editable && lengthRecommendation && completeGeometry && !candidate.problem && upper-lower > 1e-6) {
+  if (editable && lengthRecommendation && completeGeometry && !candidate.problem && recommendation.maxLength-recommendation.minLength > 1e-6) {
     const apply = button('Apply suggested stroke limits','use-path-lengths');
     apply.dataset.id = id;
     out.push(apply);
@@ -745,10 +744,7 @@ export function inspectorContent({model,design=model,pick,selections=[],page,sim
           props.push(f('Member type','kind',item.kind,{choices:[['rod','Rod'],['body','Weighted body']]}));
         }
         if(isPiston(item)) props.push(simulation ? liveReadout('Connection length',millimeters(length),'length') : row('Connection length',millimeters(length)),
-          ...(edit ? pistonLengthFields(item,length) : [
-            f('Compressed (mm)','minLength',item.minLength*1000,{min:1}),
-            f('Extended (mm)','maxLength',item.maxLength*1000,{min:1}),
-          ]),
+          ...pistonLengthFields(item,length,edit),
           f('Rated force (N)','force',item.force,{min:0}),f('Direction','forceMode',item.forceMode,{choices:[['push','Push / extend'],['pull','Pull / retract']]}),
           f('Barrel end','barrelEnd',item.barrelEnd ?? 'a',{choices:[['a','Start · '+jointLabel(item.a)],['b','End · '+jointLabel(item.b)]]}),
           edit && button('Invert barrel orientation','invert-barrel'),
