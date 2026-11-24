@@ -1,3 +1,5 @@
+import { roundedPistonLimits } from "./piston-physics.js";
+
 const jointKinds = new Set(["origin", "pin", "fixed", "rotation"]);
 const elementKinds = new Set(["rod", "body", "actuator", "gas_spring", "motor"]);
 const dimensionKinds = new Set(["distance", "horizontal", "vertical"]);
@@ -92,7 +94,8 @@ export function normalizeMechanism(data) {
     const maxLength = numeric(element.maxLength ?? element.max_length, length, `${label} extended length`);
     const forceMode = element.forceMode ?? element.force_mode;
     return {
-      id: element.id, a, b, length, minLength, maxLength,
+      id: element.id, a, b, length,
+      ...(isPiston(element) ? roundedPistonLimits(minLength,maxLength,distance(model,a,b)) : {minLength,maxLength}),
       kind: kindOrThrow(element.kind ?? "rod", elementKinds, label),
       name: element.name ?? "",
       mass: Math.max(0, numeric(element.mass, 0, `${label} mass`)),

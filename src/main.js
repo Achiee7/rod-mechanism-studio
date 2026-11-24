@@ -1,6 +1,7 @@
 import { createMechanism, createDemo, cloneMechanism, normalizeMechanism, nextId, solveSketch,
   sketchDriven, splitElement, removeObject, distance, isPiston, balanceForce, currentForces, analyzePath, poseValidity, Simulation } from './mechanics.js';
-import { createCanvas, pistonGeometry } from './canvas.js';
+import { createCanvas } from './canvas.js';
+import { pistonGeometry, roundedPistonLimits, roundPistonLength } from './piston-physics.js';
 import { setupStudio } from './ui.js';
 import { collections, kindName, label, lookup, renderTree, inspectorContent, updateAnalysisCursor, updateSimulationReadouts, strokeStopLabel } from './panels.js';
 import { PlaybackClock, translateSelection, pathCsv } from './workspace-tools.js';
@@ -169,8 +170,11 @@ function addMember({kind,a,b}) {
     const start=resolveEndpoint(a),end=resolveEndpoint(b);
     const length=distance(design,start.id,end.id);
     if(length<0.001) throw Error('A component needs two endpoints at least 1 mm apart.');
+    const powered=isPiston({kind});
+    const minLength=Math.max(.001,length*.65);
+    const limits=powered ? roundedPistonLimits(minLength,length,length) : {minLength,maxLength:length};
     const p=itemOf('element',{kind,a:start.id,b:end.id,length,mass:kind==='body'?1:0,
-      force:['actuator','gas_spring'].includes(kind)?100:0,forceMode:'push',minLength:Math.max(.001,length*.65),maxLength:length,
+      force:powered?100:0,forceMode:'push',...limits,
       stiffness:0,damping:0,autoReturn:kind==='actuator',barrelEnd:'a',torque:kind==='motor'?1:0,showForce:true});
     chooseCreated('element',p);
   },'Component added. Choose endpoints for the next component or press Esc.');
@@ -454,8 +458,12 @@ function constraintOperand(s) {
 function fieldChange(input) {
   const key=input.dataset.field;
   let value=input.type==='checkbox'?input.checked:input.type==='number'?input.valueAsNumber:input.value;
+  if((key==='minLength'||key==='maxLength') && Number.isFinite(value)) {
+    value=roundPistonLength(value/1000);
+    input.value=(value*1000).toFixed(2);
+  }
   if(input.type==='number' && (!input.checkValidity()||!Number.isFinite(value))){input.reportValidity();renderPanel();hint('Enter a value within the displayed field limits.');return;}
-  if(['value','minLength','maxLength','offset','length','x','y'].includes(key)) value/=1000;
+  if(['value','offset','length','x','y'].includes(key)) value/=1000;
   if(sim && page==='motion' && ['gravity','gravityEnabled','iterations','damping'].includes(key)) {
     sim.model.options[key]=value;
     sim.refreshForces(physicsMode==='real' && sim.validity.valid);measured=false;forceReport=null;render();hint('Simulation settings updated for this run.');
@@ -478,10 +486,11 @@ function useForce(act,button) {
   if(!p||!isPiston(p))return;
   const recommendation=act==='use-required'?null:travel().recommendations?.[p.id];
   if(act==='use-path-lengths') {
-    const minLength=recommendation?.minLength, maxLength=recommendation?.maxLength;
+    const minLength=roundPistonLength(recommendation?.minLength,'floor');
+    const maxLength=roundPistonLength(recommendation?.maxLength,'ceil');
     const complete=travel().poses.length && travel().poses.every(pose=>Number.isFinite(pose.pistons?.[p.id]?.length));
     const problem=pistonGeometry({minLength,maxLength},distance(design,p.a,p.b)).problem;
-    if(!complete || !(maxLength>minLength) || problem) {
+    if(!complete || !(recommendation?.maxLength>recommendation?.minLength) || !(minLength>=0.001) || !(maxLength>minLength) || problem) {
       hint(problem || 'A single-stage cylinder cannot be sized from these stroke bounds.');return;
     }
     update(()=>{p.minLength=minLength;p.maxLength=maxLength;},'Piston stroke limits updated.');
@@ -680,6 +689,9 @@ $('#project-file').addEventListener('change',async e=>{
   finally{input.value='';}
 });
 document.addEventListener('keydown',e=>{
+  if(e.key==='Enter' && e.target.matches('input:is([data-field="minLength"],[data-field="maxLength"])')){
+    e.preventDefault();e.target.blur();return;
+  }
   if(e.target.closest('input,select,textarea,dialog')||e.altKey)return;
   const key=e.key.toLowerCase(),ctrl=e.ctrlKey||e.metaKey;
   if(ctrl && key==='a' && mode==='model'){

@@ -2,6 +2,25 @@ const FITTING_FRACTION = 0.1;
 const BARREL_FRACTION = 1 - 2 * FITTING_FRACTION;
 const MOUNT_TOLERANCE = 1e-6;
 
+export function roundPistonLength(length, method = 'round') {
+  if (!Number.isFinite(length)) return NaN;
+  const ticks = Number((length * 100000).toPrecision(15));
+  return Math[method](ticks) / 100000;
+}
+
+export function roundedPistonLimits(minLength, maxLength, mount) {
+  const rounded = { minLength: roundPistonLength(minLength), maxLength: roundPistonLength(maxLength) };
+  if (!pistonGeometry({minLength,maxLength},mount).valid) return rounded;
+  if (rounded.minLength !== minLength && rounded.minLength > mount) rounded.minLength = roundPistonLength(mount,'floor');
+  if (rounded.maxLength !== maxLength && rounded.maxLength < mount) rounded.maxLength = roundPistonLength(mount,'ceil');
+  if (!pistonGeometry(rounded,mount).configurationValid) {
+    const higherMin = roundPistonLength(rounded.minLength + 0.00001);
+    if (higherMin <= mount) rounded.minLength = higherMin;
+    else if (rounded.maxLength - 0.00001 >= mount) rounded.maxLength = roundPistonLength(rounded.maxLength - 0.00001);
+  }
+  return rounded;
+}
+
 // Nominal pin-to-pin limits for the installed pose, in metres.
 export function pistonLengthRanges(compressed, extended, mount) {
   const range = (low, high) => Number.isFinite(low) && Number.isFinite(high) && low <= high ? [low, high] : null;
