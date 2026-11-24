@@ -1,4 +1,4 @@
-import { roundedPistonLimits } from "./piston-physics.js";
+import { roundedPistonLimits, roundPistonLength } from "./piston-physics.js";
 
 const jointKinds = new Set(["origin", "pin", "fixed", "rotation"]);
 const elementKinds = new Set(["rod", "body", "actuator", "gas_spring", "motor"]);
@@ -48,6 +48,12 @@ function numeric(value, fallback, label) {
   return result;
 }
 
+function optionalPistonStop(value, label) {
+  if (value == null || value === "") return null;
+  const length = roundPistonLength(numeric(value, null, label));
+  return length >= 0.001 ? length : null;
+}
+
 function kindOrThrow(value, kinds, label) {
   if (!kinds.has(value)) throw new Error(`${label} has an unknown type: ${value}.`);
   return value;
@@ -95,7 +101,11 @@ export function normalizeMechanism(data) {
     const forceMode = element.forceMode ?? element.force_mode;
     return {
       id: element.id, a, b, length,
-      ...(isPiston(element) ? roundedPistonLimits(minLength,maxLength,distance(model,a,b)) : {minLength,maxLength}),
+      ...(isPiston(element) ? {
+        ...roundedPistonLimits(minLength,maxLength,distance(model,a,b)),
+        forcedMinLength: optionalPistonStop(element.forcedMinLength, `${label} forced retract stop`),
+        forcedMaxLength: optionalPistonStop(element.forcedMaxLength, `${label} forced extension stop`),
+      } : {minLength,maxLength}),
       kind: kindOrThrow(element.kind ?? "rod", elementKinds, label),
       name: element.name ?? "",
       mass: Math.max(0, numeric(element.mass, 0, `${label} mass`)),

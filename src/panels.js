@@ -233,9 +233,9 @@ export function updateForceBalance(host, inputs) {
 
 export function updateSimulationReadouts(host, inputs) {
   updateForceBalance(host,inputs);
-  const {model,pick,motionStatus,time,playing} = inputs;
+  const {model,pick,motionStatus,reversalStatus,time,playing} = inputs;
   const part = pick?.type === 'element' && lookup(model,pick);
-  const readouts = {motion:motionStatus, elapsed:metric(time,'s',2),
+  const readouts = {motion:motionStatus, reversal:reversalStatus ?? '—', elapsed:metric(time,'s',2),
     length:part && isPiston(part) ? millimeters(distance(model,part.a,part.b)) : ''};
   for (const output of host.querySelectorAll('[data-simulation-readout]')) {
     output.textContent = readouts[output.dataset.simulationReadout];
@@ -247,6 +247,35 @@ export function updateSimulationReadouts(host, inputs) {
 function technicalDetails(title, ...contents) {
   const details = h('details',null,'rm-technical-details');
   details.append(h('summary',title),...contents.filter(Boolean));
+  return details;
+}
+
+function forcedStopsSection(part, editable) {
+  const limits = [
+    ['Retract stop','forcedMinLength','Use current length for retract'],
+    ['Extend stop','forcedMaxLength','Use current length for extend'],
+  ];
+  const configured = limits.some(([,key]) => Number.isFinite(part[key]));
+  if (!editable && !configured) return null;
+  const controls = limits.flatMap(([title,key,buttonTitle]) => {
+    const value = part[key];
+    if (!editable) return [row(title,Number.isFinite(value) ? millimeters(value) : 'Installed limit')];
+    const control = field(title + ' (mm)',key,value == null ? NaN : value*1000,{min:1,step:.01,decimals:2});
+    const input = control.querySelector('input');
+    input.inputMode = 'decimal';
+    input.placeholder = 'Installed limit';
+    const useCurrent = button(buttonTitle,'use-current-stop','rm-link');
+    useCurrent.dataset.stop = key;
+    return [control,useCurrent];
+  });
+  const outside = limits.some(([,key]) => part[key] != null && (part[key] < part.minLength || part[key] > part.maxLength));
+  const crossed = part.forcedMinLength != null && part.forcedMaxLength != null && part.forcedMinLength > part.forcedMaxLength;
+  const details = technicalDetails('Forced motion stops',
+    editable && h('p','Optional pin-to-pin limits for a physical contact such as a closed hatch. Leave a field blank to use the installed stroke.','rm-note'),
+    ...controls,
+    outside && h('p','A modeled stop is outside the installed stroke. Forced motion still respects the installed limits.','rm-note'),
+    crossed && h('p','Set the retract stop at or below the extend stop.','rm-note'));
+  details.open = configured;
   return details;
 }
 
@@ -673,7 +702,7 @@ function multiSelection(model, selections, editable) {
   return section(objects.length + ' items selected',list,editable && button('Delete selected items','delete','rm-delete'));
 }
 export function inspectorContent({model,design=model,pick,selections=[],page,simulation,path,forces,pistonLoads=forces?.pistons,
-  balancePistonId,physicsMode,analysis={},time=0,playing=false,trace=false,motionStatus}) {
+  balancePistonId,physicsMode,analysis={},time=0,playing=false,trace=false,motionStatus,reversalStatus}) {
   const item=lookup(model,pick), edit=!simulation;
   const title=page==='properties' && selections.length>1 ? 'Selection' :
     item && page==='properties' ? label(item) : page==='motion'?'Motion settings':page==='results'?'Force results':page==='balance'?'Force balance':'Properties';
@@ -724,6 +753,7 @@ export function inspectorContent({model,design=model,pick,selections=[],page,sim
       field('Damping','damping',o.damping,{min:0,max:1}),
       field('Solver iterations','iterations',o.iterations,{min:1,max:200,step:1})));
     if(simulation) blocks.push(section('Playback',liveReadout('Motion',motionStatus,'motion'),liveReadout('Elapsed',metric(time,'s',2),'elapsed'),
+      physicsMode==='forced' && liveReadout('Last reversal',reversalStatus ?? '—','reversal'),
       button(playing?'Pause':'Run','play'),button('Step one frame','step'),button('Reset pose','reset'),button(trace?'Hide traces':'Trace moving pins','trace'),button('Clear traces','clear-traces')));
   } else if(selections.length>1) {
     blocks.push(multiSelection(model,selections,edit));
@@ -745,6 +775,7 @@ export function inspectorContent({model,design=model,pick,selections=[],page,sim
         }
         if(isPiston(item)) props.push(simulation ? liveReadout('Connection length',millimeters(length),'length') : row('Connection length',millimeters(length)),
           ...pistonLengthFields(item,length,edit),
+          (edit || physicsMode==='forced') && forcedStopsSection(item,edit),
           f('Rated force (N)','force',item.force,{min:0}),f('Direction','forceMode',item.forceMode,{choices:[['push','Push / extend'],['pull','Pull / retract']]}),
           f('Barrel end','barrelEnd',item.barrelEnd ?? 'a',{choices:[['a','Start · '+jointLabel(item.a)],['b','End · '+jointLabel(item.b)]]}),
           edit && button('Invert barrel orientation','invert-barrel'),

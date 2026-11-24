@@ -7,6 +7,8 @@ import { collections, kindName, label, lookup, renderTree, inspectorContent, upd
 import { PlaybackClock, translateSelection, pathCsv } from './workspace-tools.js';
 
 const $ = selector => document.querySelector(selector);
+const forcedStopFields = new Set(['forcedMinLength','forcedMaxLength']);
+const pistonLengthFields = new Set(['minLength','maxLength',...forcedStopFields]);
 const ui = setupStudio();
 const storeKey = 'rod-mechanism-studio.project.v1';
 const demoTitle = 'Hatch + gas spring';
@@ -172,7 +174,9 @@ function addMember({kind,a,b}) {
     if(length<0.001) throw Error('A component needs two endpoints at least 1 mm apart.');
     const powered=isPiston({kind});
     const minLength=Math.max(.001,length*.65);
-    const limits=powered ? roundedPistonLimits(minLength,length,length) : {minLength,maxLength:length};
+    const limits=powered ? {
+      ...roundedPistonLimits(minLength,length,length),forcedMinLength:null,forcedMaxLength:null,
+    } : {minLength,maxLength:length};
     const p=itemOf('element',{kind,a:start.id,b:end.id,length,mass:kind==='body'?1:0,
       force:powered?100:0,forceMode:'push',...limits,
       stiffness:0,damping:0,autoReturn:kind==='actuator',barrelEnd:'a',torque:kind==='motor'?1:0,showForce:true});
@@ -263,7 +267,7 @@ function panelInputs() {
   const path = mode==='analysis' ? travel() : null;
   return {model:current(),design,pick,page,selections,simulation:!!sim,path,forces:inspectForces(),balancePistonId:balancePiston(current())?.id,
     analysis:{...analysis,forceDisplay},physicsMode,time:sim?.time,playing,trace:sim?.tracing,
-    motionStatus:sim && simulationStatus()};
+    motionStatus:sim && simulationStatus(),reversalStatus:forcedReversalStatus()};
 }
 function renderPanel() {
   if(!page){panelContext=null;ui.setPanel(null);return;}
@@ -296,6 +300,7 @@ function simulationStatus() {
   if(!sim.validity.valid) return 'Invalid starting pose';
   const stopped=sim.pistons.filter(({element})=>element.driveState==='stroke-stop');
   if(stopped.length && stopped.length===sim.pistons.length) {
+    if(physicsMode==='forced' && stopped.some(({element})=>sim.validity.pistons[element.id]?.forcedStop)) return 'Modeled travel stop';
     const stop=sim.validity.pistons[stopped[0].element.id]?.atStop;
     const sharedStop=stopped.every(({element})=>sim.validity.pistons[element.id]?.atStop===stop);
     return (sharedStop ? strokeStopLabel(stop) : null) ?? 'Stroke stop';
@@ -303,12 +308,27 @@ function simulationStatus() {
   if(!playing && sim.pistons.some(({element})=>element.driveState==='blocked')) return 'Motion blocked';
   return playing ? 'Running' : 'Paused';
 }
+function forcedReversalStatus() {
+  const reversal=sim?.lastForcedReversal;
+  if(physicsMode!=='forced' || !reversal)return null;
+  const reason={
+    geometry:'Linkage turning point', 'forced-stop':'Modeled travel stop', 'stroke-stop':'Installed stroke limit', manual:'Manual',
+  }[reversal.reason];
+  const directions=new Set(reversal.commands.map(({mode})=>mode==='push'?'Push / extend':'Pull / retract'));
+  return reason+' · '+[...directions].join(' and ');
+}
 function simulationHint() {
-  if(!sim.motionMessage) return defaultHint();
+  if(!sim.motionMessage) {
+    const reversal=forcedReversalStatus();
+    return reversal ? 'Last reversal · '+reversal : defaultHint();
+  }
   if(physicsMode==='forced' && sim.validity.valid && sim.pistons.length) {
     if(simulationStatus()==='Motion blocked') return sim.motionMessage+' Check the mounting and drive directions, or try reversing travel.';
-    if(sim.pistons.every(({element})=>sim.validity.pistons[element.id]?.atStop==='both')) {
-      return sim.motionMessage+' Check the installed piston travel in Model.';
+    if(sim.pistons.every(({element})=>{
+      const stroke=sim.validity.pistons[element.id];
+      return stroke?.atStop==='both' || stroke?.forcedStop==='both';
+    })) {
+      return sim.motionMessage+' Check the installed stroke and modeled stops in Model.';
     }
     if(!playing && sim.pistons.every(({element})=>element.driveState==='stroke-stop')) {
       return sim.motionMessage+' Choose Reverse travel, then Run.';
@@ -367,6 +387,7 @@ function switchMode(next) {
 function tick(now) {
   if(!playing||!sim) return;
   const previous=sim.time;
+  const previousReversal=sim.lastForcedReversal;
   const result=clock.advance(now,speed,sim);
   const advanced=sim.time!==previous;
   if(advanced || result?.settled) measured=true;
@@ -379,6 +400,7 @@ function tick(now) {
     hint(simulationHint());
     return;
   }
+  if(previousReversal!==sim.lastForcedReversal) hint(simulationHint());
   if(advanced){forceReport=null;renderDrawing();}
   if(now-lastPanel>150){
     updateStatus();
@@ -455,14 +477,26 @@ function constraintOperand(s) {
   if(!operand){operand=s;setSelection([s]);render();hint(defaultHint());return;}
   if(operand.id!==s.id) applyConstraint(relation,operand,s);
 }
+function setForcedStop(part,key,value) {
+  if(value!==null) {
+    if(value<part.minLength || value>part.maxLength) throw Error('Set the modeled stop within the installed stroke.');
+    const other=key==='forcedMinLength' ? part.forcedMaxLength : part.forcedMinLength;
+    if(other!=null && (key==='forcedMinLength' ? value>other : value<other)) {
+      throw Error('The retract stop must be at or below the extend stop.');
+    }
+  }
+  part[key]=value;
+}
 function fieldChange(input) {
   const key=input.dataset.field;
   let value=input.type==='checkbox'?input.checked:input.type==='number'?input.valueAsNumber:input.value;
-  if((key==='minLength'||key==='maxLength') && Number.isFinite(value)) {
+  const clearedStop=forcedStopFields.has(key) && input.value==='' && !input.validity.badInput;
+  if(clearedStop) value=null;
+  if(pistonLengthFields.has(key) && Number.isFinite(value)) {
     value=roundPistonLength(value/1000);
     input.value=(value*1000).toFixed(2);
   }
-  if(input.type==='number' && (!input.checkValidity()||!Number.isFinite(value))){input.reportValidity();renderPanel();hint('Enter a value within the displayed field limits.');return;}
+  if(input.type==='number' && !clearedStop && (!input.checkValidity()||!Number.isFinite(value))){input.reportValidity();renderPanel();hint('Enter a value within the displayed field limits.');return;}
   if(['value','offset','length','x','y'].includes(key)) value/=1000;
   if(sim && page==='motion' && ['gravity','gravityEnabled','iterations','damping'].includes(key)) {
     sim.model.options[key]=value;
@@ -473,6 +507,10 @@ function fieldChange(input) {
   update(()=>{
     if(page==='motion'){design.options[key]=value;return;}
     const item=lookup(design,pick);if(!item)throw Error('Select an object first.');
+    if(forcedStopFields.has(key)) {
+      setForcedStop(item,key,value);
+      return;
+    }
     if((key==='minLength'&&value>item.maxLength)||(key==='maxLength'&&value<item.minLength)) throw Error('Extended length must be at least the compressed length.');
     if(key==='length'){
       const d=design.dimensions.find(d=>d.kind==='distance' && d.driving && ((d.a===item.a && d.b===item.b)||(d.a===item.b&&d.b===item.a)));
@@ -580,16 +618,17 @@ function action(act,b) {
   }
   if((act==='play'||act==='step')&&sim&&!sim.validity.valid){hint(defaultHint());return;}
   if(act==='reverse-travel'&&sim && physicsMode==='forced' && sim.validity.valid){
-    sim.reverseForcedTravel();measured=false;forceReport=null;render();hint(sim.forcedReversed?'Forced travel reversed. The installed piston rating is unchanged.':'Following the configured piston direction.');return;
+    sim.reverseForcedTravel();measured=false;forceReport=null;render();hint(simulationHint());return;
   }
   if(act==='play'&&sim){if(playing)stop();else{playing=true;frame=requestAnimationFrame(tick);}render();hint(defaultHint());return;}
   if(act==='step'&&sim){
     stop();
     const previous=sim.time;
+    const previousReversal=sim.lastForcedReversal;
     const result=sim.step(1/60);
     if(sim.time>previous || result?.settled) measured=true;
     forceReport=null;render();
-    hint(sim.motionMessage ? simulationHint() : 'Advanced one simulation frame (1/60 s).');
+    hint(sim.motionMessage || previousReversal!==sim.lastForcedReversal ? simulationHint() : 'Advanced one simulation frame (1/60 s).');
     return;
   }
   if(act==='reset'&&sim){stop();sim.reset();measured=false;forceReport=null;render();hint('Restored the design pose.');return;}
@@ -598,6 +637,20 @@ function action(act,b) {
   if(sim)return;
   if(['use-required','use-peak','use-path-lengths'].includes(act))return useForce(act,b);
   if(mode!=='model')return;
+  if(act==='use-current-stop'){
+    const part=pick?.type==='element' && lookup(design,pick);
+    const key=b.dataset.stop;
+    if(!part || !isPiston(part) || !forcedStopFields.has(key))return;
+    const mountedLength=distance(design,part.a,part.b);
+    if(pistonGeometry(part,mountedLength).issues.some(issue=>issue.code==='stroke')){
+      hint('The current connection length is outside the installed stroke.');
+      return;
+    }
+    const rounded=roundPistonLength(mountedLength);
+    const stopLength=Math.min(part.maxLength,Math.max(part.minLength,rounded));
+    update(()=>setForcedStop(part,key,stopLength),'Modeled stop set from the current connection length.');
+    return;
+  }
   if(act==='invert-barrel'){
     const part=pick?.type==='element' && lookup(design,pick);
     if(part && isPiston(part)) update(()=>{part.barrelEnd=part.barrelEnd==='b'?'a':'b';},'Cylinder mounting reversed.');
@@ -689,7 +742,7 @@ $('#project-file').addEventListener('change',async e=>{
   finally{input.value='';}
 });
 document.addEventListener('keydown',e=>{
-  if(e.key==='Enter' && e.target.matches('input:is([data-field="minLength"],[data-field="maxLength"])')){
+  if(e.key==='Enter' && e.target.matches('input[data-field]') && pistonLengthFields.has(e.target.dataset.field)){
     e.preventDefault();e.target.blur();return;
   }
   if(e.target.closest('input,select,textarea,dialog')||e.altKey)return;
