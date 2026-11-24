@@ -1,6 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { pistonLengthRanges } from '../src/piston-physics.js';
 import { assistArrowLabel, marqueeSelection, pistonGeometry, pistonShortfallLabel } from '../src/canvas.js';
+
+test('piston length guidance respects the other endpoint, barrel and installed gap', () => {
+  const mount = .250000978;
+  const ranges = pistonLengthRanges(.1625, .25, mount);
+  assert.equal(ranges.compressed[0], .25 / 1.8);
+  assert.equal(ranges.compressed[1], .25);
+  assert.equal(ranges.extended[1], .1625 * 1.8);
+  for (const minLength of ranges.compressed) assert.ok(pistonGeometry({minLength,maxLength:.25},mount).valid);
+  for (const maxLength of ranges.extended) assert.ok(pistonGeometry({minLength:.1625,maxLength},mount).valid);
+  assert.equal(pistonLengthRanges(.2,.24,.25).compressed,null);
+  assert.equal(pistonLengthRanges(.1,.25,.25).extended,null);
+});
 
 test('a window requires containment while a crossing window includes intersected links', () => {
   const positions = {

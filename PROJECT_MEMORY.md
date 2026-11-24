@@ -22,6 +22,8 @@ Build a browser studio for analyzing feasible 2D linkage paths, the forces they 
 
 - Fixed short-stroke hatch playback in both modes. Real physics uses uniform hinge inertia and pauses at rest. Force results distinguish the 249.6 N axial stop reaction, zero hand force to hold, and 249.3 N upward to release the test hatch.
 
+- 2026-11-24 · Added reciprocal piston-length hints for the current mounting position and single-stage barrel. Both lengths remain independently editable.
+
 ## Scope for later
 
 - The earlier Frame Studio project also had 3D and team collaboration. This studio targets standalone 2D mechanism work.
