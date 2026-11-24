@@ -687,6 +687,153 @@ test("actuator auto-return cycles its forced commands without editing the physic
   assert.equal(reachedReturn, true);
 });
 
+function turningHatch({ startLength = 0.9, autoReturn = true, ...stops } = {}) {
+  const anchor = 1.6;
+  const x = (1 + anchor ** 2 - startLength ** 2) / (2 * anchor);
+  return normalizeMechanism({
+    joints: [point(1, 0, 0, "rotation"), point(2, x, Math.sqrt(1 - x ** 2)), point(3, anchor, 0, "fixed")],
+    elements: [
+      { id: 1, a: 1, b: 2, kind: "body", mass: 10 },
+      {
+        id: 2, a: 3, b: 2, kind: "gas_spring", force: 80, forceMode: "pull",
+        minLength: 0.55, maxLength: 0.9, autoReturn, ...stops,
+      },
+    ],
+    options: { gravityEnabled: false, damping: 0 },
+  });
+}
+
+test("forced auto-return retraces the same branch between a linkage turning point and the extended stop", () => {
+  const model = turningHatch();
+  const simulation = new Simulation(model, { physicsMode: "forced" });
+  const spring = simulation.model.elements[1];
+  const tip = simulation.model.joints.find(joint => joint.id === 2);
+  const reversals = [];
+  for (let frame = 0; frame < 900 && reversals.length < 6; frame++) {
+    const previousMode = spring.commandMode;
+    const previousLength = distance(simulation.model, spring.a, spring.b);
+    const result = simulation.step(1 / 120);
+    assert.equal(result.accepted, true, simulation.motionMessage);
+    assert.equal(result.validity.valid, true);
+    assert.equal(spring.forceMode, "pull");
+    close(distance(simulation.model, 1, 2), 1, 1e-8);
+    assert.ok(tip.y >= -1e-7, "the hatch crossed to the opposite branch");
+    if (spring.commandMode === previousMode) continue;
+    const length = distance(simulation.model, spring.a, spring.b);
+    const turningLength = spring.commandMode === "push" ? Math.min(length, previousLength) : Math.max(length, previousLength);
+    close(turningLength, spring.commandMode === "push" ? 0.6 : spring.maxLength, 5e-5);
+    assert.equal(simulation.lastForcedReversal.reason, spring.commandMode === "push" ? "geometry" : "stroke-stop");
+    reversals.push(spring.commandMode);
+  }
+  assert.deepEqual(reversals, ["push", "pull", "push", "pull", "push", "pull"]);
+  assert.equal(model.elements[1].forceMode, "pull");
+});
+
+test("forced playback with auto-return disabled stops at the linkage turn while real physics passes through", () => {
+  const model = turningHatch({ autoReturn: false });
+  const forced = new Simulation(model, { physicsMode: "forced" });
+  const spring = forced.model.elements[1];
+  let frames = 0;
+  while (frames < 200 && forced.step(1 / 120).accepted) frames++;
+  assert.ok(frames > 1 && frames < 200);
+  assert.equal(forced.validity.valid, true);
+  assert.equal(spring.commandMode, "pull");
+  close(distance(forced.model, spring.a, spring.b), 0.6, 5e-5);
+  assert.equal(forced.validity.pistons[spring.id].atStop, null);
+
+  const real = new Simulation(turningHatch());
+  const tip = real.model.joints.find(joint => joint.id === 2);
+  for (let frame = 0; frame < 120 && tip.y >= 0; frame++) assert.equal(real.step(1 / 120).accepted, true);
+  assert.ok(tip.y < 0);
+  assert.equal(real.model.elements[1].forceMode, "pull");
+});
+
+test("forced auto-return preserves the four-bar assembly branch and the installed spring rating", () => {
+  const extended = 1.65;
+  const crankX = (5 - extended ** 2) / 4;
+  const crankY = Math.sqrt(1 - crankX ** 2);
+  const linkLength = 1.1;
+  const couplerRise = Math.sqrt(linkLength ** 2 - (extended / 2) ** 2) / extended;
+  const model = normalizeMechanism({
+    joints: [
+      point(1, 0, 0, "rotation"), point(2, crankX, crankY),
+      point(3, (2 + crankX) / 2 + crankY * couplerRise, crankY / 2 + (2 - crankX) * couplerRise),
+      point(4, 2, 0, "fixed"),
+    ],
+    elements: [
+      { id: 1, a: 1, b: 2, kind: "rod" },
+      { id: 2, a: 2, b: 3, kind: "rod" },
+      { id: 3, a: 3, b: 4, kind: "rod" },
+      { id: 4, a: 4, b: 2, kind: "gas_spring", forceMode: "pull", force: 80, minLength: 0.95, maxLength: extended, autoReturn: true },
+    ],
+    options: { gravityEnabled: false },
+  });
+  const simulation = new Simulation(model, { physicsMode: "forced" });
+  const spring = simulation.model.elements[3];
+  const crank = simulation.model.joints.find(joint => joint.id === 2);
+  const coupler = simulation.model.joints.find(joint => joint.id === 3);
+  assert.equal(simulation.hinge, null);
+  const reversals = [];
+  for (let frame = 0; frame < 1200 && reversals.length < 4; frame++) {
+    const previousMode = spring.commandMode;
+    const previousLength = distance(simulation.model, spring.a, spring.b);
+    const result = simulation.step(1 / 120);
+    assert.equal(result.accepted, true, simulation.motionMessage);
+    assert.equal(result.validity.valid, true);
+    assert.ok(crank.y >= -0.002);
+    assert.ok((2 - crank.x) * (coupler.y - crank.y) + crank.y * (coupler.x - crank.x) > 0);
+    for (const link of model.elements.slice(0, 3)) close(distance(simulation.model, link.a, link.b), link.length, 1e-5);
+    if (spring.commandMode === previousMode) continue;
+    const length = distance(simulation.model, spring.a, spring.b);
+    const retractLimit = spring.commandMode === "push";
+    close(retractLimit ? Math.min(previousLength, length) : Math.max(previousLength, length), retractLimit ? 1 : extended, 1e-3);
+    assert.equal(simulation.lastForcedReversal.reason, retractLimit ? "geometry" : "stroke-stop");
+    assert.equal(pistonLoads(simulation.model)[spring.id].ratedForce, -80);
+    assert.equal(spring.forceMode, "pull");
+    reversals.push(spring.commandMode);
+  }
+  assert.deepEqual(reversals, ["push", "pull", "push", "pull"]);
+});
+
+test("manual lid stops limit forced playback and its traces without changing physical stroke", () => {
+  const model = turningHatch({ startLength: 0.78, autoReturn: false, forcedMinLength: 0.69, forcedMaxLength: 0.82 });
+  const [, configured] = model.elements;
+  assert.equal(configured.forcedMinLength, 0.69);
+  assert.equal(configured.forcedMaxLength, 0.82);
+  const simulation = new Simulation(model, { physicsMode: "forced" });
+  const spring = simulation.model.elements[1];
+  simulation.setTracing(true);
+  const travelToStop = length => {
+    let frames = 0;
+    while (frames < 120 && simulation.step(1 / 120).accepted) frames++;
+    assert.ok(frames > 1 && frames < 120);
+    close(distance(simulation.model, spring.a, spring.b), length, 1e-6);
+    assert.equal(simulation.validity.pistons[spring.id].atStop, null);
+    assert.equal(spring.driveState, "stroke-stop");
+    assert.match(simulation.motionMessage, /forced travel limit/);
+  };
+  travelToStop(configured.forcedMinLength);
+  simulation.reverseForcedTravel();
+  travelToStop(configured.forcedMaxLength);
+  close(spring.minLength, 0.55);
+  close(spring.maxLength, 0.9);
+  assert.equal(spring.forceMode, "pull");
+  const trace = simulation.traces.get(2);
+  assert.ok(trace.length > 25);
+  for (const { x, y } of trace) {
+    const length = Math.hypot(x - 1.6, y);
+    assert.ok(length >= configured.forcedMinLength - 1e-6 && length <= configured.forcedMaxLength + 1e-6);
+  }
+
+  const real = new Simulation(model);
+  let frames = 0;
+  while (frames < 120 && distance(real.model, spring.a, spring.b) >= 0.68) {
+    assert.equal(real.step(1 / 120).accepted, true);
+    frames++;
+  }
+  assert.ok(frames < 120, "real playback was blocked by the forced minimum");
+});
+
 test("the ramp force budget separates raw weight, vertical effort, and axial command shortfall", () => {
   const model = normalizeMechanism({
     joints: [
